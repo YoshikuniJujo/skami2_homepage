@@ -10,7 +10,6 @@ import Data.Pipe
 import Data.Pipe.List
 import Data.Time
 import System.IO
-import System.Environment
 import Numeric
 import Network
 import Network.PeyoTLS.Server
@@ -37,9 +36,6 @@ main = do
 		writeIORef rg g'
 		return u
 	rssn <- newIORef []
---	as <- getArgs
---	k <- readKey "/home/tatsuya/csr/mydomain.key"
---	c <- readCertificateChain ["/home/tatsuya/csr/2014crt_not_cross_owl_skami3.pem"]
 	k <- readKey "2014_private_de.key"
 	c <- readCertificateChain ["2014_cert.pem"]
 	g0 <- cprgCreate <$> createEntropyPool :: IO SystemRNG
@@ -51,8 +47,14 @@ main = do
 			t <- open h ["TLS_RSA_WITH_AES_128_CBC_SHA"] [(k, c)]
 				Nothing
 			r <- getRequest t
+			resp r rssn t uuid4
+			hlClose t
+
+resp :: Request PeyotlsHandle -> IORef [(UUID4, String)] -> PeyotlsHandle ->
+	IO UUID4 -> PeyotlsM ()
+resp r rssn t uuid4 =
 			case r of
-				RequestGet p v g -> do
+				RequestGet _p _v g -> do
 					mun <- liftIO $ getUser rssn (read . BSC.unpack . snd <$> listToMaybe (getCookie g))
 					case mun of
 						Just un -> do
@@ -69,12 +71,11 @@ main = do
 								. LBS.fromChunks $ map BSU.fromString as) {
 									responseContentType = ContentType Text Html []
 									}
-				RequestPost p v pst -> do
+				RequestPost _p _v pst -> do
 					liftIO $ do
 						putStrLn "POST"
 						print $ postCookie pst
 					up_ <- runPipe $
---						requestBody r =$= printP `finally` liftIO (putStrLn "")
 						requestBody r =$= toList
 					let	up = map ((\[n, v] -> (n, v)) . split '=')
 							. split '&'
@@ -105,7 +106,7 @@ main = do
 							responseContentType = ContentType Text Html [],
 							responseSetCookie = maybeToList $ cookie <$> u
 							}
-			hlClose t
+				_ -> error "bad"
 
 printP :: MonadIO m => Pipe BSC.ByteString () m ()
 printP = await >>= maybe (return ()) (\s -> liftIO (BSC.putStr s) >> printP)
@@ -131,8 +132,9 @@ split _ [] = [[]]
 split s (x : xs)
 	| x == s = [] : split s xs
 	| otherwise = (x :) `heading` split s xs
-	where heading f (x : xs) = f x : xs
+	where heading f (y : ys) = f y : ys; heading _ _ = error "bad"
 
+showH :: (Show a, Integral a) => a -> String
 showH n = replicate (2 - length s) '0' ++ s
 	where s = showHex n ""
 
