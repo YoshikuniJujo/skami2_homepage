@@ -79,14 +79,14 @@ resp r rssn t uuid4 =
 						requestBody r =$= toList
 					let	up = map ((\[n, v] -> (n, v)) . split '=')
 							. split '&'
-							$ maybe "" (concat . map BSC.unpack) up_
+							$ maybe "" (concatMap BSC.unpack) up_
 						Just un = lookup "user_name" up
 						Just p = lookup "user_password" up
 					liftIO $ getZonedTime >>= print
 					liftIO $ putStrLn un
 					liftIO $ putStrLn p
-					tbl <- liftIO $ passwordTable
-					let slt = maybe "" id $ getSalt (BSC.pack un) tbl
+					tbl <- liftIO passwordTable
+					let slt = fromMaybe "" $ getSalt (BSC.pack un) tbl
 					let pw = maybe "" BSC.unpack $ getPw (BSC.pack un) tbl
 					let hs = iterate SHA256.hash 
 						(BSC.pack p `BS.append` slt) !! 10000
@@ -99,7 +99,7 @@ resp r rssn t uuid4 =
 							liftIO (addUser rssn uuid4 un)
 						else return Nothing
 					pg <- liftIO $ readFile "static/login.html"
-					let msg = flip setUserName pg (if pw == pw' then un else "Nobody")
+					let msg = flip setUserName pg $ if pw == pw' then un else "Nobody"
 					putResponse t
 						((response :: LBS.ByteString -> Response Pipe (TlsHandle Handle SystemRNG))
 						. LBS.fromChunks $ map BSU.fromString [msg]) {
@@ -112,8 +112,9 @@ printP :: MonadIO m => Pipe BSC.ByteString () m ()
 printP = await >>= maybe (return ()) (\s -> liftIO (BSC.putStr s) >> printP)
 
 passwordTable :: IO [(BS.ByteString, BS.ByteString, BS.ByteString)]
-passwordTable = map (\[u, s, p] -> (u, s, p))
-	. map (map BSC.pack . words) . lines <$> readFile "password.txt"
+passwordTable = map
+		((\[u, s, p] -> (u, s, p)) . map BSC.pack . words)
+	. lines <$> readFile "password.txt"
 
 getSalt, getPw :: BS.ByteString ->
 	[(BS.ByteString, BS.ByteString, BS.ByteString)] -> Maybe BS.ByteString
