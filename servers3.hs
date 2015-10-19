@@ -14,7 +14,8 @@ import Data.Time (getZonedTime)
 import System.IO (Handle)
 import Numeric (showHex)
 import Network (PortID(..), listenOn, accept)
-import Network.PeyoTLS.Server (PeyotlsM, PeyotlsHandle, TlsHandle, run, open)
+import Network.PeyoTLS.Server (
+	CipherSuite, PeyotlsM, PeyotlsHandle, TlsHandle, run, open)
 import Network.PeyoTLS.ReadFile (readKey, readCertificateChain)
 import Network.TigHTTP.Server (getRequest, putResponse, response, requestBody)
 import Network.TigHTTP.Types (
@@ -31,6 +32,16 @@ import qualified Crypto.Hash.SHA256 as SHA256
 
 import UUID4 (UUID4, newGen, mkUUID4)
 
+cipherSuites :: [CipherSuite]
+cipherSuites = [
+	"TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256",
+	"TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA",
+	"TLS_DHE_RSA_WITH_AES_128_CBC_SHA256",
+	"TLS_DHE_RSA_WITH_AES_128_CBC_SHA",
+	"TLS_RSA_WITH_AES_128_CBC_SHA256",
+	"TLS_RSA_WITH_AES_128_CBC_SHA"
+	]
+
 main :: IO ()
 main = do
 	(k, c, g0, rssn, rg) <- (,,,,)
@@ -44,8 +55,7 @@ main = do
 		(h, _, _) <- liftIO $ accept soc
 		g <- StateT $ return . cprgFork
 		void . liftIO . forkIO . (`run` g) $ do
-			t <- open h ["TLS_RSA_WITH_AES_128_CBC_SHA"] [(k, c)]
-				Nothing
+			t <- open h cipherSuites [(k, c)] Nothing
 			r <- getRequest t
 			resp r rssn t rg
 			hlClose t
@@ -61,7 +71,7 @@ resp :: Request PeyotlsHandle -> IORef [(UUID4, String)] -> PeyotlsHandle ->
 	IORef SystemRNG -> PeyotlsM ()
 resp r rssn t rg = case r of
 	RequestGet _p _v g -> do
-		mun <- liftIO $ getUser rssn (read . BSC.unpack . snd <$> listToMaybe (getCookie g))
+		mun <- liftIO . getUser rssn $ getUUID4 g
 		case mun of
 			Just un -> do
 				as <- liftIO $ (: []) . setUserName un <$> readFile "static/i_know.html"
@@ -155,6 +165,9 @@ addUser rssn gt nm = do
 getUser :: IORef [(UUID4, String)] -> Maybe UUID4 -> IO (Maybe String)
 getUser rssn (Just u) = lookup u <$> readIORef rssn
 getUser _ _ = return Nothing
+
+getUUID4 :: Get -> Maybe UUID4
+getUUID4 g = read . BSC.unpack . snd <$> listToMaybe (getCookie g)
 
 cookie :: UUID4 -> SetCookie
 cookie u = SetCookie {
