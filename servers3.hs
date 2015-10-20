@@ -4,7 +4,7 @@ import Control.Applicative ((<$>), (<*>))
 import "monads-tf" Control.Monad.State (
 	MonadIO, liftIO, forever, void, StateT(..), runStateT )
 import Control.Concurrent (forkIO)
-import Data.Maybe (fromMaybe, maybeToList, listToMaybe)
+import Data.Maybe (maybeToList, listToMaybe)
 import Data.List (isPrefixOf)
 import Data.HandleLike (hlClose)
 import Data.Pipe (Pipe, runPipe, await, (=$=))
@@ -19,7 +19,7 @@ import Network.PeyoTLS.Server (
 import Network.PeyoTLS.ReadFile (readKey, readCertificateChain)
 import Network.TigHTTP.Server (getRequest, putResponse, response, requestBody)
 import Network.TigHTTP.Types (
-	Request(..), Get(..), Post(..),
+	Request(..), Path(..), Get(..), Post(..),
 	Response(..), ContentType(..), Type(..), Subtype(..), SetCookie(..) )
 import "crypto-random" Crypto.Random (
 	SystemRNG, createEntropyPool, cprgCreate, cprgFork )
@@ -28,7 +28,6 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ByteString.Lazy as LBS
 import qualified Data.ByteString.UTF8 as BSU
-import qualified Crypto.Hash.SHA256 as SHA256
 
 import UUID4 (UUID4, newGen, mkUUID4)
 import MakeHash
@@ -71,24 +70,78 @@ uuid4IO rg = do
 resp :: Request PeyotlsHandle -> IORef [(UUID4, String)] -> PeyotlsHandle ->
 	IORef SystemRNG -> PeyotlsM ()
 resp r rssn t rg = case r of
-	RequestGet _p _v g -> do
-		mun <- liftIO . getUser rssn $ getUUID4 g
-		case mun of
-			Just un -> do
-				as <- liftIO $ (: []) . setUserName un <$> readFile "static/i_know.html"
-				putResponse t
-					((response :: LBS.ByteString -> Response Pipe (TlsHandle Handle SystemRNG))
-					. LBS.fromChunks $ map BSU.fromString as) {
-						responseContentType = ContentType Text Html []
-						}
-			_ -> do
-				as <- liftIO $ (: []) <$> readFile "static/index.html"
-				putResponse t
-					((response :: LBS.ByteString -> Response Pipe (TlsHandle Handle SystemRNG))
-					. LBS.fromChunks $ map BSU.fromString as) {
-						responseContentType = ContentType Text Html []
-						}
-	RequestPost _p _v pst -> do
+	RequestGet (Path "/") _v g -> index g rssn t
+	RequestGet (Path "/signup") _v _g -> toSignup t
+	RequestPost (Path "/login") _v pst -> login pst r rssn t rg
+	RequestPost (Path "/signup") _v pst -> signup pst r rssn t rg
+	_ -> error "bad"
+	
+toSignup :: PeyotlsHandle -> PeyotlsM ()
+toSignup t = do
+		as <- liftIO $ (: []) <$> readFile "static/signup.html"
+		putResponse t
+			((response :: LBS.ByteString -> Response Pipe (TlsHandle Handle SystemRNG))
+			. LBS.fromChunks $ map BSU.fromString as) {
+				responseContentType = ContentType Text Html [] }
+	
+index :: Get -> IORef [(UUID4, String)] ->
+	PeyotlsHandle -> PeyotlsM ()
+index g rssn t = do
+	mun <- liftIO . getUser rssn $ getUUID4 g
+	case mun of
+		Just un -> do
+			as <- liftIO $ (: []) . setUserName un <$> readFile "static/i_know.html"
+			putResponse t
+				((response :: LBS.ByteString -> Response Pipe (TlsHandle Handle SystemRNG))
+				. LBS.fromChunks $ map BSU.fromString as) {
+					responseContentType = ContentType Text Html []
+					}
+		_ -> do
+			as <- liftIO $ (: []) <$> readFile "static/index.html"
+			putResponse t
+				((response :: LBS.ByteString -> Response Pipe (TlsHandle Handle SystemRNG))
+				. LBS.fromChunks $ map BSU.fromString as) {
+					responseContentType = ContentType Text Html []
+					}
+
+signup :: Post a -> Request PeyotlsHandle -> IORef [(UUID4, String)] -> PeyotlsHandle ->
+	IORef SystemRNG -> PeyotlsM ()
+signup pst r rssn t rg = do
+		liftIO $ do
+			putStrLn "POST"
+			print $ postCookie pst
+		up_ <- runPipe $
+			requestBody r =$= toList
+		let	up = map ((\[n, v] -> (n, v)) . split '=')
+				. split '&'
+				$ maybe "" (concatMap BSC.unpack) up_
+			Just un = lookup "user_name" up
+			Just p = lookup "user_password" up
+			Just rp = lookup "re_user_password" up
+			Just cp = lookup "captcha" up
+		liftIO . print $ p == rp
+		liftIO $ putStrLn cp
+		liftIO $ getZonedTime >>= print
+		liftIO $ putStrLn un
+		liftIO $ putStrLn p
+		if cp /= "%E3%83%8F%E3%83%9F%E3%83%B3%E3%82%B0%E3%83%90%E3%83%BC%E3%83%89" || p /= rp
+		then do	pg <- liftIO $ readFile "static/badcaptcha.html"
+			putResponse t
+				((response :: LBS.ByteString -> Response Pipe (TlsHandle Handle SystemRNG))
+				. LBS.fromChunks $ map BSU.fromString [pg]) {
+					responseContentType = ContentType Text Html []
+					}
+		else do	b <- liftIO $ mkAccount (BSC.pack un) (BSC.pack p)
+			pg <- liftIO $ readFile "static/signup_done.html"
+			putResponse t
+				((response :: LBS.ByteString -> Response Pipe (TlsHandle Handle SystemRNG))
+				. LBS.fromChunks $ map BSU.fromString [pg]) {
+					responseContentType = ContentType Text Html []
+					}
+
+login :: Post a -> Request PeyotlsHandle -> IORef [(UUID4, String)] -> PeyotlsHandle ->
+	IORef SystemRNG -> PeyotlsM ()
+login pst r rssn t rg = do
 		liftIO $ do
 			putStrLn "POST"
 			print $ postCookie pst
@@ -102,29 +155,19 @@ resp r rssn t rg = case r of
 		liftIO $ getZonedTime >>= print
 		liftIO $ putStrLn un
 		liftIO $ putStrLn p
-		tbl <- liftIO passwordTable
-		let slt = fromMaybe "" $ getSalt (BSC.pack un) tbl
-		let pw = maybe "" BSC.unpack $ getPw (BSC.pack un) tbl
-		let hs = iterate SHA256.hash 
-			(BSC.pack p `BS.append` slt) !! 10000
-		let pw' = concatMap showH $ BS.unpack hs
-		liftIO $ print pw
-		liftIO $ print pw'
-		liftIO . print $ pw == pw'
 		b <- liftIO $ checkHash (BSC.pack un) (BSC.pack p)
-		u <- if b -- pw == pw'
+		u <- if b
 			then Just <$>
 				liftIO (addUser rssn (uuid4IO rg) un)
 			else return Nothing
 		pg <- liftIO $ readFile "static/login.html"
-		let msg = flip setUserName pg $ if b {- pw == pw' -} then un else "Nobody"
+		let msg = flip setUserName pg $ if b then un else "Nobody"
 		putResponse t
 			((response :: LBS.ByteString -> Response Pipe (TlsHandle Handle SystemRNG))
 			. LBS.fromChunks $ map BSU.fromString [msg]) {
 				responseContentType = ContentType Text Html [],
 				responseSetCookie = maybeToList $ cookie <$> u
 				}
-	_ -> error "bad"
 
 printP :: MonadIO m => Pipe BSC.ByteString () m ()
 printP = await >>= maybe (return ()) (\s -> liftIO (BSC.putStr s) >> printP)

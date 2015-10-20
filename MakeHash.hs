@@ -11,6 +11,8 @@ import qualified Crypto.Hash.SHA256 as SHA256
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
 
+import System.Random
+
 main :: IO ()
 main = do
 	u_ : p_ : s_ : _ <- getArgs
@@ -38,11 +40,16 @@ getHash u = do
 	[s, h] <- words <$> readFile ("passwords/" ++ BSC.unpack u)
 	return (BSC.pack s, BSC.pack h)
 
-mkAccount :: BSC.ByteString -> BSC.ByteString -> IO ()
+mkAccount :: BSC.ByteString -> BSC.ByteString -> IO Bool
 mkAccount u p = do
-	let s = "01234567890123456789"
-	writeFile ("passwords/" ++ BSC.unpack u) . ((BSC.unpack s ++ " ") ++)
-		. concatMap showH . BS.unpack $ mkHash p s
+	b <- doesFileExist $ "passwords/" ++ BSC.unpack u
+	if b then return False else do
+--		let s = "01234567890123456789"
+		s <- BSC.pack . show <$> (randomIO :: IO Int)
+		writeFile ("passwords/" ++ BSC.unpack u)
+			. ((BSC.unpack s ++ " ") ++)
+			. concatMap showH . BS.unpack $ mkHash p s
+		return True
 
 mkHash :: BSC.ByteString -> BSC.ByteString -> BSC.ByteString
 mkHash p s = iterate SHA256.hash (p `BSC.append` s) !! 10000
