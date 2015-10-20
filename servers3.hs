@@ -132,7 +132,9 @@ signup pst r rssn t rg = do
 					responseContentType = ContentType Text Html []
 					}
 		else do	b <- liftIO $ mkAccount (BSC.pack un) (BSC.pack p)
-			pg <- liftIO $ readFile "static/signup_done.html"
+			pg <- liftIO . readFile $ if not b
+				then "static/user_exist.html"
+				else "static/signup_done.html"
 			putResponse t
 				((response :: LBS.ByteString -> Response Pipe (TlsHandle Handle SystemRNG))
 				. LBS.fromChunks $ map BSU.fromString [pg]) {
