@@ -31,6 +31,7 @@ import qualified Data.ByteString.UTF8 as BSU
 import qualified Crypto.Hash.SHA256 as SHA256
 
 import UUID4 (UUID4, newGen, mkUUID4)
+import MakeHash
 
 cipherSuites :: [CipherSuite]
 cipherSuites = [
@@ -110,12 +111,13 @@ resp r rssn t rg = case r of
 		liftIO $ print pw
 		liftIO $ print pw'
 		liftIO . print $ pw == pw'
-		u <- if pw == pw'
+		b <- liftIO $ checkHash (BSC.pack un) (BSC.pack p)
+		u <- if b -- pw == pw'
 			then Just <$>
 				liftIO (addUser rssn (uuid4IO rg) un)
 			else return Nothing
 		pg <- liftIO $ readFile "static/login.html"
-		let msg = flip setUserName pg $ if pw == pw' then un else "Nobody"
+		let msg = flip setUserName pg $ if b {- pw == pw' -} then un else "Nobody"
 		putResponse t
 			((response :: LBS.ByteString -> Response Pipe (TlsHandle Handle SystemRNG))
 			. LBS.fromChunks $ map BSU.fromString [msg]) {
