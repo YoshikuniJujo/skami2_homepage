@@ -31,6 +31,7 @@ import qualified Data.ByteString.UTF8 as BSU
 
 import UUID4 (UUID4, newGen, mkUUID4)
 import MakeHash
+import MailTo
 
 cipherSuites :: [CipherSuite]
 cipherSuites = [
@@ -74,6 +75,7 @@ resp r rssn t rg = case r of
 	RequestGet (Path "/signup") _v _g -> toSignup t
 	RequestPost (Path "/login") _v pst -> login pst r rssn t rg
 	RequestPost (Path "/signup") _v pst -> signup pst r rssn t rg
+	RequestPost (Path p) _ _ -> error $ "bad: path = " ++ BSC.unpack p
 	_ -> error "bad"
 	
 toSignup :: PeyotlsHandle -> PeyotlsM ()
@@ -116,9 +118,11 @@ signup pst r rssn t rg = do
 				. split '&'
 				$ maybe "" (concatMap BSC.unpack) up_
 			Just un = lookup "user_name" up
+			Just ma = lookup "mail_address" up
 			Just p = lookup "user_password" up
 			Just rp = lookup "re_user_password" up
 			Just cp = lookup "captcha" up
+		liftIO $ print ma
 		liftIO . print $ p == rp
 		liftIO $ putStrLn cp
 		liftIO $ getZonedTime >>= print
@@ -140,6 +144,7 @@ signup pst r rssn t rg = do
 				. LBS.fromChunks $ map BSU.fromString [pg]) {
 					responseContentType = ContentType Text Html []
 					}
+			liftIO $ mailTo ma
 
 login :: Post a -> Request PeyotlsHandle -> IORef [(UUID4, String)] -> PeyotlsHandle ->
 	IORef SystemRNG -> PeyotlsM ()
