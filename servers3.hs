@@ -73,14 +73,58 @@ resp :: Request PeyotlsHandle -> IORef [(UUID4, String)] -> PeyotlsHandle ->
 resp r rssn t rg = case r of
 	RequestGet (Path "/") _v g -> index g rssn t
 	RequestGet (Path "/signup") _v _g -> toSignup t
+	RequestGet (Path "/activate") _v _g -> toActivate t
 	RequestPost (Path "/login") _v pst -> login pst r rssn t rg
 	RequestPost (Path "/signup") _v pst -> signup pst r rssn t rg
+	RequestPost (Path "/activate") _v pst -> activate pst r t
 	RequestPost (Path p) _ _ -> error $ "bad: path = " ++ BSC.unpack p
 	_ -> error "bad"
-	
+
+activate :: Post a -> Request PeyotlsHandle -> PeyotlsHandle -> PeyotlsM ()
+activate pst r t = do
+	liftIO $ do
+		putStrLn "POST"
+		print $ postCookie pst
+	up_ <- runPipe $ requestBody r =$= toList
+	let	up = map ((\[n, v] -> (n, v)) . split '=')
+			. split '&'
+			$ maybe "" (concatMap BSC.unpack) up_
+		Just ak = lookup "activation_key" up
+	liftIO $ do
+		getZonedTime >>= print
+		putStrLn ak
+		getActi ak >>= doActivate
+	as <- liftIO $ (: []) <$> readFile "static/activated.html"
+	putResponse t
+		((response :: LBS.ByteString -> Response Pipe (TlsHandle Handle SystemRNG))
+		. LBS.fromChunks $ map BSU.fromString as) {
+			responseContentType = ContentType Text Html [] }
+
+getActi :: String -> IO (Maybe String)
+getActi s = do
+	c <- readFile "actidict.txt"
+	let d = map ((\[k, v] -> (k, v)) . words) $ lines c
+	return $ lookup s d
+
+doActivate :: Maybe FilePath -> IO ()
+doActivate (Just fp) = do
+	ac <- readFile ("passwords/" ++ fp)
+	print ac
+	writeFile ("passwords/" ++ fp) . (++ "\n") . unwords
+		. (\[s, h, _] -> [s, h]) $ words ac
+doActivate _ = return ()
+
 toSignup :: PeyotlsHandle -> PeyotlsM ()
 toSignup t = do
 		as <- liftIO $ (: []) <$> readFile "static/signup.html"
+		putResponse t
+			((response :: LBS.ByteString -> Response Pipe (TlsHandle Handle SystemRNG))
+			. LBS.fromChunks $ map BSU.fromString as) {
+				responseContentType = ContentType Text Html [] }
+	
+toActivate :: PeyotlsHandle -> PeyotlsM ()
+toActivate t = do
+		as <- liftIO $ (: []) <$> readFile "static/to_activate.html"
 		putResponse t
 			((response :: LBS.ByteString -> Response Pipe (TlsHandle Handle SystemRNG))
 			. LBS.fromChunks $ map BSU.fromString as) {

@@ -5,6 +5,7 @@ module MakeHash (mkAccount, checkHash) where
 import Control.Applicative
 import System.Environment
 import System.Directory
+import System.Exit
 import Numeric
 
 import qualified Crypto.Hash.SHA256 as SHA256
@@ -31,14 +32,20 @@ checkHash :: BSC.ByteString -> BSC.ByteString -> IO Bool
 checkHash u p = do
 	b <- doesFileExist $ "passwords/" ++ BSC.unpack u
 	if b
-	then do	(s, h) <- getHash u
-		return $ BSC.pack (concatMap showH (BS.unpack $ mkHash p s)) == h
+	then do	sh <- getHash u
+		case sh of
+			Just (s, h) -> return $ BSC.pack
+				(concatMap showH (BS.unpack $ mkHash p s)) == h
+			_ -> return False
 	else return False
 
-getHash :: BSC.ByteString -> IO (BSC.ByteString, BSC.ByteString)
+getHash :: BSC.ByteString -> IO (Maybe (BSC.ByteString, BSC.ByteString))
 getHash u = do
-	[s, h] <- words <$> readFile ("passwords/" ++ BSC.unpack u)
-	return (BSC.pack s, BSC.pack h)
+	ws <- words <$> readFile ("passwords/" ++ BSC.unpack u)
+	case ws of
+		[s, h] -> return $ Just (BSC.pack s, BSC.pack h)
+		[s, h, "False"] -> return Nothing
+		_ -> putStrLn "MakeHash.getHash: BAD" >> exitFailure
 
 mkAccount :: BSC.ByteString -> BSC.ByteString -> IO Bool
 mkAccount u p = do
