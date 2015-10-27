@@ -73,22 +73,27 @@ resp :: Request PeyotlsHandle -> IORef [(UUID4, String)] -> PeyotlsHandle ->
 resp r rssn t rg = case r of
 	RequestGet (Path "/") _v g -> index g rssn t
 	RequestGet (Path "/signup") _v _g -> toSignup t
-	RequestGet (Path "/activate") _v _g -> toActivate t
+	RequestGet (Path "/activate") _v g -> toActivate g t
 	RequestPost (Path "/login") _v pst -> login pst r rssn t rg
 	RequestPost (Path "/signup") _v pst -> signup pst r rssn t rg
-	RequestPost (Path "/activate") _v pst -> activate pst r t
-	RequestPost (Path p) _ _ -> error $ "bad: path = " ++ BSC.unpack p
+	RequestPost (Path "/activate") _v pst -> activatePost pst r t
+	RequestGet (Path p) _ _ -> case span (/= '?') $ BSC.unpack p of
+		("/activate", '?' : ak) -> activate ak t
+		_ -> error $ "bad: path = " ++ BSC.unpack p
+	RequestGet p _v _g -> error $ "bad: " ++ show p
 	_ -> error "bad"
 
-activate :: Post a -> Request PeyotlsHandle -> PeyotlsHandle -> PeyotlsM ()
-activate pst r t = do
+activatePost :: Post a -> Request PeyotlsHandle -> PeyotlsHandle -> PeyotlsM ()
+activatePost pst r t = do
 	liftIO $ do
 		putStrLn "POST"
 		print $ postCookie pst
 	up_ <- runPipe $ requestBody r =$= toList
-	let	up = map ((\[n, v] -> (n, v)) . split '=')
-			. split '&'
-			$ maybe "" (concatMap BSC.unpack) up_
+	activate (maybe "" (concatMap BSC.unpack) up_) t
+
+activate :: String -> PeyotlsHandle -> PeyotlsM ()
+activate up_ t = do
+	let	up = map ((\[n, v] -> (n, v)) . split '=') $ split '&' up_
 		Just ak = lookup "activation_key" up
 	liftIO $ do
 		getZonedTime >>= print
@@ -110,8 +115,10 @@ doActivate :: Maybe FilePath -> IO ()
 doActivate (Just fp) = do
 	ac <- readFile ("passwords/" ++ fp)
 	print ac
-	writeFile ("passwords/" ++ fp) . (++ "\n") . unwords
-		. (\[s, h, _] -> [s, h]) $ words ac
+	case words ac of
+		[s, h, _] -> writeFile ("passwords/" ++ fp) . (++ "\n") $
+			unwords [s, h]
+		_ -> return ()
 doActivate _ = return ()
 
 toSignup :: PeyotlsHandle -> PeyotlsM ()
@@ -122,13 +129,14 @@ toSignup t = do
 			. LBS.fromChunks $ map BSU.fromString as) {
 				responseContentType = ContentType Text Html [] }
 	
-toActivate :: PeyotlsHandle -> PeyotlsM ()
-toActivate t = do
-		as <- liftIO $ (: []) <$> readFile "static/to_activate.html"
-		putResponse t
-			((response :: LBS.ByteString -> Response Pipe (TlsHandle Handle SystemRNG))
-			. LBS.fromChunks $ map BSU.fromString as) {
-				responseContentType = ContentType Text Html [] }
+toActivate :: Get -> PeyotlsHandle -> PeyotlsM ()
+toActivate g t = do
+	liftIO $ print g
+	as <- liftIO $ (: []) <$> readFile "static/to_activate.html"
+	putResponse t
+		((response :: LBS.ByteString -> Response Pipe (TlsHandle Handle SystemRNG))
+		. LBS.fromChunks $ map BSU.fromString as) {
+			responseContentType = ContentType Text Html [] }
 	
 index :: Get -> IORef [(UUID4, String)] ->
 	PeyotlsHandle -> PeyotlsM ()

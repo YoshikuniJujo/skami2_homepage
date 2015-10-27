@@ -14,7 +14,7 @@ mailTo :: String -> UUID4 -> IO ()
 mailTo to ui = sendMail "skami2.iocikun.jp" . simpleMail
 			(Address (Just "Homepage") "tatsuya@skami.iocikun.jp")
 			[Address (Just "Administrator") (T.pack $ toAt to)] [] []
-			(T.pack "HummingBird") . (: []) . plainTextPart . LT.pack $ "アカウントを作成します: \n\nhttps://skami2.iocikun.jp/activate\n" ++ show ui
+			(T.pack "HummingBird") . (: []) . plainTextPart . LT.pack $ "アカウントを作成します: \n\nhttps://skami2.iocikun.jp/activate?activation_key=" ++ show ui
 
 toAt :: String -> String
 toAt ('%' : '4' : '0' : s) = '@' : s
