@@ -188,7 +188,17 @@ signup pst r rssn t rg = do
 				. LBS.fromChunks $ map BSU.fromString [pg]) {
 					responseContentType = ContentType Text Html []
 					}
-			liftIO $ mailTo ma
+			liftIO $ do
+				uuid <- uuid4IO rg
+				print uuid
+				addActivate un uuid
+				mailTo ma uuid
+
+addActivate :: String -> UUID4 -> IO ()
+addActivate ac ui = do
+	c <- readFile "actidict.txt"
+	print c
+	writeFile "actidict.txt" $ c ++ show ui ++ " " ++ ac ++ "\n"
 
 login :: Post a -> Request PeyotlsHandle -> IORef [(UUID4, String)] -> PeyotlsHandle ->
 	IORef SystemRNG -> PeyotlsM ()

@@ -54,7 +54,7 @@ mkAccount u p = do
 --		let s = "01234567890123456789"
 		s <- BSC.pack . show <$> (randomIO :: IO Int)
 		writeFile ("passwords/" ++ BSC.unpack u)
-			. ((BSC.unpack s ++ " ") ++)
+			. (++ " False") . ((BSC.unpack s ++ " ") ++)
 			. concatMap showH . BS.unpack $ mkHash p s
 		return True
 
