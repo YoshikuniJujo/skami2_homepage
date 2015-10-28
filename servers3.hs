@@ -103,6 +103,7 @@ pages = [
 	((False, Path "/"), index),
 	((False, Path "/login"), index),
 	((True, Path "/login"), login),
+	((False, Path "/logout"), logout),
 	((False, Path "/signup"), signupS),
 	((True, Path "/signup"), signup),
 	((False, Path "/activate"), activateS),
@@ -136,7 +137,12 @@ login = Dynamic $ \t _ np (ut, g) -> do
 		=<< checkHash (pck n) (pck p)
 	flip (maybe $ showFile t "static/index.html") mu $ \u -> do
 		m <- io $ setUName n <$> readFile "static/login.html"
-		setCookiePage t [m] u
+		setCookiePage t [m] $ cookie u
+
+logout :: Page
+logout = Dynamic $ \t _ _ _ -> do
+	m <- io $ readFile "static/index.html"
+	setCookiePage t [m] logoutCookie
 
 activate :: Page
 activate = Dynamic $ \t _ up _ -> do
@@ -241,7 +247,20 @@ cookie u = SetCookie {
 	cookieName = "uuid",
 	cookieValue = BSC.pack $ show u,
 	cookieExpires = Nothing,
-	cookieMaxAge = Just 10,
+	cookieMaxAge = Just 60,
+	cookieDomain = Just "skami2.iocikun.jp",
+	cookiePath = Just "/",
+	cookieSecure = True,
+	cookieHttpOnly = True,
+	cookieExtension = []
+	}
+
+logoutCookie :: SetCookie
+logoutCookie = SetCookie {
+	cookieName = "uuid",
+	cookieValue = "",
+	cookieExpires = Nothing,
+	cookieMaxAge = Just 0,
 	cookieDomain = Just "skami2.iocikun.jp",
 	cookiePath = Just "/",
 	cookieSecure = True,
@@ -264,12 +283,12 @@ showPage t as = putResponse t
 	. LBS.fromChunks $ map BSU.fromString [as]) {
 		responseContentType = ContentType Text Html [] }
 
-setCookiePage :: PeyotlsHandle -> [String] -> UUID4 -> PeyotlsM ()
+setCookiePage :: PeyotlsHandle -> [String] -> SetCookie -> PeyotlsM ()
 setCookiePage t as u = putResponse t
 	((response :: LBS.ByteString -> Response Pipe (TlsHandle Handle SystemRNG))
 	. LBS.fromChunks $ map BSU.fromString as) {
 		responseContentType = ContentType Text Html [],
-		responseSetCookie = [cookie u] }
+		responseSetCookie = [u] }
 
 pairs :: String -> Pairs
 pairs s = (`map` filter (any $ not . isSpace) (split '&' s)) $ \ss ->
