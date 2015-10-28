@@ -14,8 +14,8 @@ import qualified Data.ByteString.Char8 as BSC
 
 import System.Random
 
-main :: IO ()
-main = do
+_main :: IO ()
+_main = do
 	u_ : p_ : s_ : _ <- getArgs
 	let	u = BSC.pack u_
 		p = BSC.pack p_
@@ -23,7 +23,7 @@ main = do
 	BSC.putStr s
 	putChar ' '
 	putStrLn . concatMap showH . BS.unpack $ mkHash p s
-	mkAccount u p
+	_ <- mkAccount u p
 	checkHash u p >>= print
 --	getHash u >>= putStrLn . concatMap showH . BS.unpack
 --	putStrLn . concatMap showH . BS.unpack $ iterate SHA256.hash pl !! 10000
@@ -44,7 +44,7 @@ getHash u = do
 	ws <- words <$> readFile ("passwords/" ++ BSC.unpack u)
 	case ws of
 		[s, h] -> return $ Just (BSC.pack s, BSC.pack h)
-		[s, h, "False"] -> return Nothing
+		[_s, _h, "False"] -> return Nothing
 		_ -> putStrLn "MakeHash.getHash: BAD" >> exitFailure
 
 mkAccount :: BSC.ByteString -> BSC.ByteString -> IO Bool

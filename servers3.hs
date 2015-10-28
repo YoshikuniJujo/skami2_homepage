@@ -4,7 +4,8 @@ import Control.Applicative ((<$>), (<*>))
 import "monads-tf" Control.Monad.State (
 	MonadIO, liftIO, forever, void, StateT(..), runStateT )
 import Control.Concurrent (forkIO)
-import Data.Maybe (maybeToList, listToMaybe)
+import Data.Bool (bool)
+import Data.Maybe (listToMaybe)
 import Data.List (isPrefixOf)
 import Data.HandleLike (hlClose)
 import Data.Pipe (Pipe, runPipe, await, (=$=))
@@ -29,9 +30,13 @@ import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ByteString.Lazy as LBS
 import qualified Data.ByteString.UTF8 as BSU
 
-import UUID4 (UUID4, newGen, mkUUID4)
+import UUID4 (UUID4, newGen, uuid4IO)
 import MakeHash
 import MailTo
+
+type Req = Request PeyotlsHandle
+type RndGen = IORef SystemRNG
+type UTable = IORef [(UUID4, String)]
 
 cipherSuites :: [CipherSuite]
 cipherSuites = [
@@ -45,7 +50,7 @@ cipherSuites = [
 
 main :: IO ()
 main = do
-	(k, c, g0, rssn, rg) <- (,,,,)
+	(k, c, g0, ut, rg) <- (,,,,)
 		<$> readKey "2014_private_de.key"
 		<*> readCertificateChain ["2014_cert.pem"]
 		<*> (cprgCreate <$> createEntropyPool :: IO SystemRNG)
@@ -53,57 +58,54 @@ main = do
 		<*> (newIORef =<< newGen)
 	soc <- listenOn $ PortNumber 443
 	void . (`runStateT` g0) . forever $ do
-		(h, _, _) <- liftIO $ accept soc
+		(h, _, _) <- io $ accept soc
 		g <- StateT $ return . cprgFork
-		void . liftIO . forkIO . (`run` g) $ do
+		void . io . forkIO . (`run` g) $ do
 			t <- open h cipherSuites [(k, c)] Nothing
 			r <- getRequest t
-			resp r rssn t rg
+			resp r ut t rg
 			hlClose t
-
-uuid4IO :: IORef SystemRNG -> IO UUID4
-uuid4IO rg = do
-	g <- readIORef rg
-	let (u, g') = mkUUID4 g
-	writeIORef rg g'
-	return u
 
 resp :: Request PeyotlsHandle -> IORef [(UUID4, String)] -> PeyotlsHandle ->
 	IORef SystemRNG -> PeyotlsM ()
-resp r rssn t rg = case r of
-	RequestGet (Path "/") _v g -> index g rssn t
-	RequestGet (Path "/signup") _v _g -> toSignup t
-	RequestGet (Path "/activate") _v g -> toActivate g t
-	RequestPost (Path "/login") _v pst -> login pst r rssn t rg
-	RequestPost (Path "/signup") _v pst -> signup pst r rssn t rg
-	RequestPost (Path "/activate") _v pst -> activatePost pst r t
+resp r ut t rg = case r of
+	RequestGet (Path "/") _v g -> index t g ut
+	RequestGet (Path "/signup") _v _g -> showFile t "static/signup.html"
+	RequestGet (Path "/activate") _v _g -> showFile t "static/to_activate.html"
+	RequestPost (Path "/login") _v _pst -> login t r ut rg
+	RequestPost (Path "/signup") _v pst -> signup pst r ut t rg
+	RequestPost (Path "/activate") _v _pst -> activatePost r t
 	RequestGet (Path p) _ _ -> case span (/= '?') $ BSC.unpack p of
-		("/activate", '?' : ak) -> activate ak t
+		("/activate", '?' : ak) -> activate t ak
 		_ -> error $ "bad: path = " ++ BSC.unpack p
-	RequestGet p _v _g -> error $ "bad: " ++ show p
 	_ -> error "bad"
+	
+index :: PeyotlsHandle -> Get -> IORef [(UUID4, String)] -> PeyotlsM ()
+index t g ut = (io (getUser ut $ getUUID4 g) >>=)
+	. maybe (showFile t "static/index.html")
+	$ (=<< io (readFile "static/i_know.html")) . (showPage t .) . setUName
 
-activatePost :: Post a -> Request PeyotlsHandle -> PeyotlsHandle -> PeyotlsM ()
-activatePost pst r t = do
-	liftIO $ do
-		putStrLn "POST"
-		print $ postCookie pst
-	up_ <- runPipe $ requestBody r =$= toList
-	activate (maybe "" (concatMap BSC.unpack) up_) t
+login :: PeyotlsHandle -> Req -> UTable -> RndGen -> PeyotlsM ()
+login t r ut g = do
+	np <- pairs . maybe "" (>>= unp) <$> runPipe (requestBody r =$= toList)
+	let Just (n, p) =
+		(,) <$> lookup "user_name" np <*> lookup "user_password" np
+	mu <- io $ bool (return Nothing) (Just <$> addUser ut (uuid4IO g) n)
+		=<< checkHash (pck n) (pck p)
+	flip (maybe $ showFile t "static/index.html") mu $ \u -> do
+		m <- io $ setUName n <$> readFile "static/login.html"
+		setCookiePage t [m] u
 
-activate :: String -> PeyotlsHandle -> PeyotlsM ()
-activate up_ t = do
-	let	up = map ((\[n, v] -> (n, v)) . split '=') $ split '&' up_
+activatePost :: Request PeyotlsHandle -> PeyotlsHandle -> PeyotlsM ()
+activatePost r t = activate t
+	. maybe "" (concatMap BSC.unpack) =<< runPipe (requestBody r =$= toList)
+
+activate :: PeyotlsHandle -> String -> PeyotlsM ()
+activate t up_ = do
+	let	up = map ((\(n : v : _) -> (n, v)) . split '=') $ split '&' up_
 		Just ak = lookup "activation_key" up
-	liftIO $ do
-		getZonedTime >>= print
-		putStrLn ak
-		getActi ak >>= doActivate
-	as <- liftIO $ (: []) <$> readFile "static/activated.html"
-	putResponse t
-		((response :: LBS.ByteString -> Response Pipe (TlsHandle Handle SystemRNG))
-		. LBS.fromChunks $ map BSU.fromString as) {
-			responseContentType = ContentType Text Html [] }
+	liftIO $ getActi ak >>= doActivate
+	showFile t "static/activated.html"
 
 getActi :: String -> IO (Maybe String)
 getActi s = do
@@ -121,46 +123,9 @@ doActivate (Just fp) = do
 		_ -> return ()
 doActivate _ = return ()
 
-toSignup :: PeyotlsHandle -> PeyotlsM ()
-toSignup t = do
-		as <- liftIO $ (: []) <$> readFile "static/signup.html"
-		putResponse t
-			((response :: LBS.ByteString -> Response Pipe (TlsHandle Handle SystemRNG))
-			. LBS.fromChunks $ map BSU.fromString as) {
-				responseContentType = ContentType Text Html [] }
-	
-toActivate :: Get -> PeyotlsHandle -> PeyotlsM ()
-toActivate g t = do
-	liftIO $ print g
-	as <- liftIO $ (: []) <$> readFile "static/to_activate.html"
-	putResponse t
-		((response :: LBS.ByteString -> Response Pipe (TlsHandle Handle SystemRNG))
-		. LBS.fromChunks $ map BSU.fromString as) {
-			responseContentType = ContentType Text Html [] }
-	
-index :: Get -> IORef [(UUID4, String)] ->
-	PeyotlsHandle -> PeyotlsM ()
-index g rssn t = do
-	mun <- liftIO . getUser rssn $ getUUID4 g
-	case mun of
-		Just un -> do
-			as <- liftIO $ (: []) . setUserName un <$> readFile "static/i_know.html"
-			putResponse t
-				((response :: LBS.ByteString -> Response Pipe (TlsHandle Handle SystemRNG))
-				. LBS.fromChunks $ map BSU.fromString as) {
-					responseContentType = ContentType Text Html []
-					}
-		_ -> do
-			as <- liftIO $ (: []) <$> readFile "static/index.html"
-			putResponse t
-				((response :: LBS.ByteString -> Response Pipe (TlsHandle Handle SystemRNG))
-				. LBS.fromChunks $ map BSU.fromString as) {
-					responseContentType = ContentType Text Html []
-					}
-
 signup :: Post a -> Request PeyotlsHandle -> IORef [(UUID4, String)] -> PeyotlsHandle ->
 	IORef SystemRNG -> PeyotlsM ()
-signup pst r rssn t rg = do
+signup pst r _ut t rg = do
 		liftIO $ do
 			putStrLn "POST"
 			print $ postCookie pst
@@ -181,21 +146,11 @@ signup pst r rssn t rg = do
 		liftIO $ putStrLn un
 		liftIO $ putStrLn p
 		if cp /= "%E3%83%8F%E3%83%9F%E3%83%B3%E3%82%B0%E3%83%90%E3%83%BC%E3%83%89" || p /= rp
-		then do	pg <- liftIO $ readFile "static/badcaptcha.html"
-			putResponse t
-				((response :: LBS.ByteString -> Response Pipe (TlsHandle Handle SystemRNG))
-				. LBS.fromChunks $ map BSU.fromString [pg]) {
-					responseContentType = ContentType Text Html []
-					}
+		then showFile t "static/badcaptcha.html"
 		else do	b <- liftIO $ mkAccount (BSC.pack un) (BSC.pack p)
-			pg <- liftIO . readFile $ if not b
+			showFile t $ if not b
 				then "static/user_exist.html"
 				else "static/signup_done.html"
-			putResponse t
-				((response :: LBS.ByteString -> Response Pipe (TlsHandle Handle SystemRNG))
-				. LBS.fromChunks $ map BSU.fromString [pg]) {
-					responseContentType = ContentType Text Html []
-					}
 			liftIO $ do
 				uuid <- uuid4IO rg
 				print uuid
@@ -207,36 +162,6 @@ addActivate ac ui = do
 	c <- readFile "actidict.txt"
 	print c
 	writeFile "actidict.txt" $ c ++ show ui ++ " " ++ ac ++ "\n"
-
-login :: Post a -> Request PeyotlsHandle -> IORef [(UUID4, String)] -> PeyotlsHandle ->
-	IORef SystemRNG -> PeyotlsM ()
-login pst r rssn t rg = do
-		liftIO $ do
-			putStrLn "POST"
-			print $ postCookie pst
-		up_ <- runPipe $
-			requestBody r =$= toList
-		let	up = map ((\[n, v] -> (n, v)) . split '=')
-				. split '&'
-				$ maybe "" (concatMap BSC.unpack) up_
-			Just un = lookup "user_name" up
-			Just p = lookup "user_password" up
-		liftIO $ getZonedTime >>= print
-		liftIO $ putStrLn un
-		liftIO $ putStrLn p
-		b <- liftIO $ checkHash (BSC.pack un) (BSC.pack p)
-		u <- if b
-			then Just <$>
-				liftIO (addUser rssn (uuid4IO rg) un)
-			else return Nothing
-		pg <- liftIO $ readFile "static/login.html"
-		let msg = flip setUserName pg $ if b then un else "Nobody"
-		putResponse t
-			((response :: LBS.ByteString -> Response Pipe (TlsHandle Handle SystemRNG))
-			. LBS.fromChunks $ map BSU.fromString [msg]) {
-				responseContentType = ContentType Text Html [],
-				responseSetCookie = maybeToList $ cookie <$> u
-				}
 
 printP :: MonadIO m => Pipe BSC.ByteString () m ()
 printP = await >>= maybe (return ()) (\s -> liftIO (BSC.putStr s) >> printP)
@@ -270,14 +195,14 @@ showH n = replicate (2 - length s) '0' ++ s
 	where s = showHex n ""
 
 addUser :: IORef [(UUID4, String)] -> IO UUID4 -> String -> IO UUID4
-addUser rssn gt nm = do
-	ssn <- readIORef rssn
+addUser ut gt nm = do
+	ssn <- readIORef ut
 	u <- gt
-	writeIORef rssn $ (u, nm) : ssn
+	writeIORef ut $ (u, nm) : ssn
 	return u
 
 getUser :: IORef [(UUID4, String)] -> Maybe UUID4 -> IO (Maybe String)
-getUser rssn (Just u) = lookup u <$> readIORef rssn
+getUser ut (Just u) = lookup u <$> readIORef ut
 getUser _ _ = return Nothing
 
 getUUID4 :: Get -> Maybe UUID4
@@ -296,8 +221,36 @@ cookie u = SetCookie {
 	cookieExtension = []
 	}
 
-setUserName :: String -> String -> String
-setUserName un ('$' : cs)
-	| "user_name" `isPrefixOf` cs = un ++ setUserName un (drop 9 cs)
-setUserName un (c : cs) = c : setUserName un cs
-setUserName _ _ = ""
+setUName :: String -> String -> String
+setUName un ('$' : cs)
+	| "user_name" `isPrefixOf` cs = un ++ setUName un (drop 9 cs)
+setUName un (c : cs) = c : setUName un cs
+setUName _ _ = ""
+
+showFile :: PeyotlsHandle -> FilePath -> PeyotlsM ()
+showFile t fp = showPage t =<< liftIO (readFile fp)
+
+showPage :: PeyotlsHandle -> String -> PeyotlsM ()
+showPage t as = putResponse t
+	((response :: LBS.ByteString -> Response Pipe (TlsHandle Handle SystemRNG))
+	. LBS.fromChunks $ map BSU.fromString [as]) {
+		responseContentType = ContentType Text Html [] }
+
+setCookiePage :: PeyotlsHandle -> [String] -> UUID4 -> PeyotlsM ()
+setCookiePage t as u = putResponse t
+	((response :: LBS.ByteString -> Response Pipe (TlsHandle Handle SystemRNG))
+	. LBS.fromChunks $ map BSU.fromString as) {
+		responseContentType = ContentType Text Html [],
+		responseSetCookie = [cookie u] }
+
+pairs :: String -> [(String, String)]
+pairs = map ((\[n, v] -> (n, v)) . split '=') . split '&'
+
+unp :: BS.ByteString -> String
+unp = BSC.unpack
+
+pck :: String -> BS.ByteString
+pck = BSC.pack
+
+io :: MonadIO m => IO a -> m a
+io = liftIO

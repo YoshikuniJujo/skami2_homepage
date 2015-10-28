@@ -1,4 +1,4 @@
-module UUID4 (UUID4, newGen, mkUUID4) where
+module UUID4 (UUID4, newGen, uuid4IO) where
 
 import Control.Applicative
 import Control.Arrow
@@ -6,6 +6,7 @@ import Data.List
 import Data.Bits
 import Data.Word
 import qualified Data.ByteString as BS
+import Data.IORef
 import Crypto.Random
 import Numeric
 
@@ -20,6 +21,13 @@ instance Read UUID4 where
 	readsPrec _ s = [(
 		UUID4 . BS.pack . map readH . (`splitN` 2) $ filter (/= '-') s,
 		"")]
+
+uuid4IO :: IORef SystemRNG -> IO UUID4
+uuid4IO rg = do
+	g <- readIORef rg
+	let (u, g') = mkUUID4 g
+	writeIORef rg g'
+	return u
 
 readH :: String -> Word8
 readH = fst . head . readHex
