@@ -6,8 +6,9 @@ import "monads-tf" Control.Monad.State (
 	MonadIO, liftIO, forever, void, StateT(..), runStateT )
 import Control.Concurrent (forkIO)
 import Data.Bool (bool)
-import Data.Maybe (listToMaybe)
+import Data.Maybe (fromMaybe, listToMaybe)
 import Data.List (isPrefixOf)
+import Data.Char (isSpace)
 import Data.HandleLike (hlClose, HandleMonad)
 import Data.Pipe (Pipe, runPipe, await, (=$=))
 import Data.Pipe.List (toList)
@@ -70,45 +71,65 @@ main = do
 			resp r ut t rg
 			hlClose t
 
+instance Eq Path where Path p1 == Path p2 = p1 == p2
+
+path :: Request PeyotlsHandle -> (Path, Maybe Pairs)
+path (RequestGet p@(Path b) _ _) = case span (/= '?') $ unp b of
+	(pt, '?' : pr) -> (Path $ pck pt, Just $ pairs pr)
+	_ -> (p, Nothing)
+path (RequestPost p _ _) = (p, Nothing)
+path (RequestRaw _ p _ _) = (p, Nothing)
+
 resp :: Request PeyotlsHandle -> UTable -> PeyotlsHandle -> RndGen -> PeyotlsM ()
 resp r ut t rg = do
-	p <- getPairs $ requestBody r
-	let	c = map (unp *** unp) $ case r of
+	pr_ <- getPairs $ requestBody r
+	let	(pt, mpr) = path r
+		pr = fromMaybe pr_ mpr
+		c = map (unp *** unp) $ case r of
 			RequestGet _ _ g -> getCookie g
 			RequestPost _ _ pst -> postCookie pst
 			_ -> []
 		s = (ut, rg)
-	case r of
-		RequestGet (Path "/") _v _g -> index t c p s
-		RequestGet (Path "/signup") _v _g -> showFile t "static/signup.html"
-		RequestGet (Path "/activate") _v _g -> showFile t "static/to_activate.html"
-		RequestPost (Path "/login") _v _pst -> login t c p s
-		RequestPost (Path "/signup") _v _pst -> signup t c p s
-		RequestPost (Path "/activate") _v _pst -> activate t c p s
-		RequestGet (Path pt) _ _ -> case span (/= '?') $ BSC.unpack pt of
-			("/activate", '?' : ak) -> activate t c (pairs ak) s
-			_ -> error $ "bad: path = " ++ BSC.unpack pt
-		_ -> error "bad"
+		mh = lookup (not $ null pr, pt) pages
+	liftIO $ print pr
+	liftIO $ print c
+	case mh of
+		Just (Static pg) -> showFile t pg
+		Just (Dynamic f) -> f t c pr s
+		_ -> error "badbadbad"
 
-data PG = P | G deriving Show
-
-pages :: [((PG, Path), Page)]
-pages = []
+pages :: [((Bool, Path), Page)]
+pages = [
+	((False, Path "/"), index),
+	((False, Path "/login"), index),
+	((True, Path "/login"), login),
+	((False, Path "/signup"), signupS),
+	((True, Path "/signup"), signup),
+	((False, Path "/activate"), activateS),
+	((True, Path "/activate"), activate) ]
 
 data Page
-	= Static FilePath
-	| Dynamic (PeyotlsHandle -> Cookie -> Pairs -> St -> PeyotlsM ())
+	= Static { static :: FilePath }
+	| Dynamic {
+		dynamic :: PeyotlsHandle -> Cookie -> Pairs -> St -> PeyotlsM ()
+		}
+
+signupS :: Page
+signupS = Static "static/signup.html"
+
+activateS :: Page
+activateS = Static "static/to_activate.html"
 	
-index :: PeyotlsHandle -> Cookie -> Pairs -> St -> PeyotlsM ()
-index t c _ (ut, _) = (io (getUser ut $ getUUID4 c) >>=)
+index :: Page
+index = Dynamic $ \t c _ (ut, _) -> (io (getUser ut $ getUUID4 c) >>=)
 	. maybe (showFile t "static/index.html")
 	$ (=<< io (readFile "static/i_know.html")) . (showPage t .) . setUName
 
 getPairs :: Body -> PeyotlsM Pairs
 getPairs b = pairs . maybe "" (>>= unp) <$> runPipe (b =$= toList)
 
-login :: PeyotlsHandle -> Cookie -> Pairs -> St -> PeyotlsM ()
-login t _ np (ut, g) = do
+login :: Page
+login = Dynamic $ \t _ np (ut, g) -> do
 	let Just (n, p) =
 		(,) <$> lookup "user_name" np <*> lookup "user_password" np
 	mu <- io $ bool (return Nothing) (Just <$> addUser ut (uuid4IO g) n)
@@ -117,8 +138,8 @@ login t _ np (ut, g) = do
 		m <- io $ setUName n <$> readFile "static/login.html"
 		setCookiePage t [m] u
 
-activate :: PeyotlsHandle -> Cookie -> Pairs -> St -> PeyotlsM ()
-activate t _ up _ = do
+activate :: Page
+activate = Dynamic $ \t _ up _ -> do
 	let Just ak = lookup "activation_key" up
 	liftIO $ getActi ak >>= doActivate
 	showFile t "static/activated.html"
@@ -139,8 +160,8 @@ doActivate (Just fp) = do
 		_ -> return ()
 doActivate _ = return ()
 
-signup :: PeyotlsHandle -> Cookie -> Pairs -> St -> PeyotlsM ()
-signup t _ up (_ut, rg) = do
+signup :: Page
+signup = Dynamic $ \t _ up (_ut, rg) -> do
 		let	Just un = lookup "user_name" up
 			Just ma = lookup "mail_address" up
 			Just p = lookup "user_password" up
@@ -251,7 +272,10 @@ setCookiePage t as u = putResponse t
 		responseSetCookie = [cookie u] }
 
 pairs :: String -> Pairs
-pairs = map ((\[n, v] -> (n, v)) . split '=') . split '&'
+pairs s = (`map` filter (any $ not . isSpace) (split '&' s)) $ \ss ->
+	case split '=' ss of
+		[n, v] -> (n, v)
+		_ -> error $ "pairs: bad " ++ show ss
 
 unp :: BS.ByteString -> String
 unp = BSC.unpack
