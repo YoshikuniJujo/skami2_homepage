@@ -1,13 +1,14 @@
 {-# LANGUAGE OverloadedStrings, PackageImports #-}
 
 import Control.Applicative ((<$>), (<*>))
+import Control.Arrow ((***))
 import "monads-tf" Control.Monad.State (
 	MonadIO, liftIO, forever, void, StateT(..), runStateT )
 import Control.Concurrent (forkIO)
 import Data.Bool (bool)
 import Data.Maybe (listToMaybe)
 import Data.List (isPrefixOf)
-import Data.HandleLike (hlClose)
+import Data.HandleLike (hlClose, HandleMonad)
 import Data.Pipe (Pipe, runPipe, await, (=$=))
 import Data.Pipe.List (toList)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
@@ -34,9 +35,12 @@ import UUID4 (UUID4, newGen, uuid4IO)
 import MakeHash
 import MailTo
 
-type Req = Request PeyotlsHandle
+type Body = Pipe () BS.ByteString (HandleMonad PeyotlsHandle) ()
+type Pairs = [(String, String)]
+type Cookie = [(String, String)]
 type RndGen = IORef SystemRNG
 type UTable = IORef [(UUID4, String)]
+type St = (UTable, RndGen)
 
 cipherSuites :: [CipherSuite]
 cipherSuites = [
@@ -66,28 +70,45 @@ main = do
 			resp r ut t rg
 			hlClose t
 
-resp :: Request PeyotlsHandle -> IORef [(UUID4, String)] -> PeyotlsHandle ->
-	IORef SystemRNG -> PeyotlsM ()
-resp r ut t rg = case r of
-	RequestGet (Path "/") _v g -> index t g ut
-	RequestGet (Path "/signup") _v _g -> showFile t "static/signup.html"
-	RequestGet (Path "/activate") _v _g -> showFile t "static/to_activate.html"
-	RequestPost (Path "/login") _v _pst -> login t r ut rg
-	RequestPost (Path "/signup") _v pst -> signup pst r ut t rg
-	RequestPost (Path "/activate") _v _pst -> activatePost r t
-	RequestGet (Path p) _ _ -> case span (/= '?') $ BSC.unpack p of
-		("/activate", '?' : ak) -> activate t ak
-		_ -> error $ "bad: path = " ++ BSC.unpack p
-	_ -> error "bad"
+resp :: Request PeyotlsHandle -> UTable -> PeyotlsHandle -> RndGen -> PeyotlsM ()
+resp r ut t rg = do
+	p <- getPairs $ requestBody r
+	let	c = map (unp *** unp) $ case r of
+			RequestGet _ _ g -> getCookie g
+			RequestPost _ _ pst -> postCookie pst
+			_ -> []
+		s = (ut, rg)
+	case r of
+		RequestGet (Path "/") _v _g -> index t c p s
+		RequestGet (Path "/signup") _v _g -> showFile t "static/signup.html"
+		RequestGet (Path "/activate") _v _g -> showFile t "static/to_activate.html"
+		RequestPost (Path "/login") _v _pst -> login t c p s
+		RequestPost (Path "/signup") _v _pst -> signup t c p s
+		RequestPost (Path "/activate") _v _pst -> activate t c p s
+		RequestGet (Path pt) _ _ -> case span (/= '?') $ BSC.unpack pt of
+			("/activate", '?' : ak) -> activate t c (pairs ak) s
+			_ -> error $ "bad: path = " ++ BSC.unpack pt
+		_ -> error "bad"
+
+data PG = P | G deriving Show
+
+pages :: [((PG, Path), Page)]
+pages = []
+
+data Page
+	= Static FilePath
+	| Dynamic (PeyotlsHandle -> Cookie -> Pairs -> St -> PeyotlsM ())
 	
-index :: PeyotlsHandle -> Get -> IORef [(UUID4, String)] -> PeyotlsM ()
-index t g ut = (io (getUser ut $ getUUID4 g) >>=)
+index :: PeyotlsHandle -> Cookie -> Pairs -> St -> PeyotlsM ()
+index t c _ (ut, _) = (io (getUser ut $ getUUID4 c) >>=)
 	. maybe (showFile t "static/index.html")
 	$ (=<< io (readFile "static/i_know.html")) . (showPage t .) . setUName
 
-login :: PeyotlsHandle -> Req -> UTable -> RndGen -> PeyotlsM ()
-login t r ut g = do
-	np <- pairs . maybe "" (>>= unp) <$> runPipe (requestBody r =$= toList)
+getPairs :: Body -> PeyotlsM Pairs
+getPairs b = pairs . maybe "" (>>= unp) <$> runPipe (b =$= toList)
+
+login :: PeyotlsHandle -> Cookie -> Pairs -> St -> PeyotlsM ()
+login t _ np (ut, g) = do
 	let Just (n, p) =
 		(,) <$> lookup "user_name" np <*> lookup "user_password" np
 	mu <- io $ bool (return Nothing) (Just <$> addUser ut (uuid4IO g) n)
@@ -96,14 +117,9 @@ login t r ut g = do
 		m <- io $ setUName n <$> readFile "static/login.html"
 		setCookiePage t [m] u
 
-activatePost :: Request PeyotlsHandle -> PeyotlsHandle -> PeyotlsM ()
-activatePost r t = activate t
-	. maybe "" (concatMap BSC.unpack) =<< runPipe (requestBody r =$= toList)
-
-activate :: PeyotlsHandle -> String -> PeyotlsM ()
-activate t up_ = do
-	let	up = map ((\(n : v : _) -> (n, v)) . split '=') $ split '&' up_
-		Just ak = lookup "activation_key" up
+activate :: PeyotlsHandle -> Cookie -> Pairs -> St -> PeyotlsM ()
+activate t _ up _ = do
+	let Just ak = lookup "activation_key" up
 	liftIO $ getActi ak >>= doActivate
 	showFile t "static/activated.html"
 
@@ -123,18 +139,9 @@ doActivate (Just fp) = do
 		_ -> return ()
 doActivate _ = return ()
 
-signup :: Post a -> Request PeyotlsHandle -> IORef [(UUID4, String)] -> PeyotlsHandle ->
-	IORef SystemRNG -> PeyotlsM ()
-signup pst r _ut t rg = do
-		liftIO $ do
-			putStrLn "POST"
-			print $ postCookie pst
-		up_ <- runPipe $
-			requestBody r =$= toList
-		let	up = map ((\[n, v] -> (n, v)) . split '=')
-				. split '&'
-				$ maybe "" (concatMap BSC.unpack) up_
-			Just un = lookup "user_name" up
+signup :: PeyotlsHandle -> Cookie -> Pairs -> St -> PeyotlsM ()
+signup t _ up (_ut, rg) = do
+		let	Just un = lookup "user_name" up
 			Just ma = lookup "mail_address" up
 			Just p = lookup "user_password" up
 			Just rp = lookup "re_user_password" up
@@ -194,19 +201,19 @@ showH :: (Show a, Integral a) => a -> String
 showH n = replicate (2 - length s) '0' ++ s
 	where s = showHex n ""
 
-addUser :: IORef [(UUID4, String)] -> IO UUID4 -> String -> IO UUID4
+addUser :: UTable -> IO UUID4 -> String -> IO UUID4
 addUser ut gt nm = do
 	ssn <- readIORef ut
 	u <- gt
 	writeIORef ut $ (u, nm) : ssn
 	return u
 
-getUser :: IORef [(UUID4, String)] -> Maybe UUID4 -> IO (Maybe String)
+getUser :: UTable -> Maybe UUID4 -> IO (Maybe String)
 getUser ut (Just u) = lookup u <$> readIORef ut
 getUser _ _ = return Nothing
 
-getUUID4 :: Get -> Maybe UUID4
-getUUID4 g = read . BSC.unpack . snd <$> listToMaybe (getCookie g)
+getUUID4 :: [(String, String)] -> Maybe UUID4
+getUUID4 c = read . snd <$> listToMaybe c
 
 cookie :: UUID4 -> SetCookie
 cookie u = SetCookie {
@@ -243,7 +250,7 @@ setCookiePage t as u = putResponse t
 		responseContentType = ContentType Text Html [],
 		responseSetCookie = [cookie u] }
 
-pairs :: String -> [(String, String)]
+pairs :: String -> Pairs
 pairs = map ((\[n, v] -> (n, v)) . split '=') . split '&'
 
 unp :: BS.ByteString -> String
