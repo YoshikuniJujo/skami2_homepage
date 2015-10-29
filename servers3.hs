@@ -104,11 +104,13 @@ pages = [
 	((True, Path "/signup"), signup),
 	((False, Path "/activate"), Static html "static/to_activate.html"),
 	((True, Path "/activate"), activate),
-	((False, Path "/robots.txt"), Static text "static/robots.txt")]
+	((False, Path "/robots.txt"), Static text "static/robots.txt"),
+	((False, Path "/favicon.ico"), Static ico "static/favicon.ico") ]
 
-html, text :: ContentType
+html, text, ico :: ContentType
 html = ContentType Text Html []
 text = ContentType Text Plain []
+ico = ContentType (TypeRaw "image") (SubtypeRaw "vnd.microsoft.icon") []
 
 data Page
 	= Static { contentType :: ContentType, static :: FilePath }
