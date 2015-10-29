@@ -20,7 +20,8 @@ import Network.PeyoTLS.ReadFile (readKey, readCertificateChain)
 import Network.TigHTTP.Server (getRequest, putResponse, response, requestBody)
 import Network.TigHTTP.Types (
 	Request(..), Path(..), Get(..), Post(..),
-	Response(..), ContentType(..), Type(..), Subtype(..), SetCookie(..) )
+	Response(..), ContentType(..), Type(..), Subtype(..), SetCookie(..),
+	StatusCode(..) )
 import "crypto-random" Crypto.Random (
 	SystemRNG, createEntropyPool, cprgCreate, cprgFork )
 
@@ -93,13 +94,19 @@ resp r ut t rg = do
 	case mh of
 		Just (Static ct pg) -> showFile t ct pg
 		Just (Dynamic f) -> f t mu pr s
-		_ -> error $ "badbadbad:" ++ show pt
+		_ -> do	io . putStrLn $ "badbadbad:" ++ show pt
+			putResponse t (response' $ LBS.fromChunks ["404 File not found"]) {
+				responseStatusCode = NotFound,
+				responseContentType = text }
+
+response' :: LBS.ByteString -> Response Pipe PeyotlsHandle
+response' = response
 
 pages :: [((Bool, Path), Page)]
 pages = [
 	((False, Path "/"), Dynamic index),
 	((False, Path "/login"), Dynamic index),
-	((True, Path "/login"), login),
+	((True, Path "/login"), Dynamic login),
 	((False, Path "/logout"), logout),
 	((False, Path "/signup"), Static html "static/signup.html"),
 	((True, Path "/signup"), signup),
@@ -129,8 +136,8 @@ index t _ _ _ = showFile t html "static/index.html"
 getPairs :: Body -> PeyotlsM Pairs
 getPairs b = pairs . maybe "" BS.concat <$> runPipe (b =$= toList)
 
-login :: Page
-login = Dynamic $ \t _ np (ut, g) -> do
+login :: PeyotlsHandle -> Maybe User -> Pairs -> St -> PeyotlsM ()
+login t _ np (ut, g) = do
 	let Just (n, p) =
 		(,) <$> lookup "user_name" np <*> lookup "user_password" np
 	mu <- io $ bool (return Nothing) (Just <$> addUser ut (uuid4IO g) n)
