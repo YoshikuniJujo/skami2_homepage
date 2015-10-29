@@ -89,15 +89,16 @@ resp r ut t rg = do
 		mh = lookup (not $ null pr, pt) pages
 	liftIO $ print pr
 	liftIO $ print c
+	mu <- (User <$>) <$> io (getUser ut $ getUUID4 c)
 	case mh of
 		Just (Static ct pg) -> showFile t ct pg
-		Just (Dynamic f) -> f t c pr s
+		Just (Dynamic f) -> f t mu pr s
 		_ -> error $ "badbadbad:" ++ show pt
 
 pages :: [((Bool, Path), Page)]
 pages = [
-	((False, Path "/"), index),
-	((False, Path "/login"), index),
+	((False, Path "/"), Dynamic index),
+	((False, Path "/login"), Dynamic index),
 	((True, Path "/login"), login),
 	((False, Path "/logout"), logout),
 	((False, Path "/signup"), Static html "static/signup.html"),
@@ -115,13 +116,15 @@ ico = ContentType (TypeRaw "image") (SubtypeRaw "vnd.microsoft.icon") []
 data Page
 	= Static { contentType :: ContentType, static :: FilePath }
 	| Dynamic {
-		dynamic :: PeyotlsHandle -> Cookie -> Pairs -> St -> PeyotlsM ()
+		dynamic :: PeyotlsHandle -> Maybe User -> Pairs -> St -> PeyotlsM ()
 		}
-	
-index :: Page
-index = Dynamic $ \t c _ (ut, _) -> (io (getUser ut $ getUUID4 c) >>=)
-	. maybe (showFile t html "static/index.html")
-	$ (=<< io (BS.readFile "static/i_know.html")) . (showPage t html .) . setUName
+
+data User = User BS.ByteString deriving Show
+
+index :: PeyotlsHandle -> Maybe User -> Pairs -> St -> PeyotlsM ()
+index t (Just u) _ _ = showPage t html . setUName u =<<
+	io (BS.readFile "static/i_know.html")
+index t _ _ _ = showFile t html "static/index.html"
 
 getPairs :: Body -> PeyotlsM Pairs
 getPairs b = pairs . maybe "" BS.concat <$> runPipe (b =$= toList)
@@ -133,7 +136,7 @@ login = Dynamic $ \t _ np (ut, g) -> do
 	mu <- io $ bool (return Nothing) (Just <$> addUser ut (uuid4IO g) n)
 		=<< checkHash n p
 	flip (maybe $ showFile t html "static/index.html") mu $ \u -> do
-		m <- io $ setUName n <$> BS.readFile "static/login.html"
+		m <- io $ setUName (User n) <$> BS.readFile "static/login.html"
 		setCookiePage t [m] $ cookie u
 
 logout :: Page
@@ -261,18 +264,12 @@ logoutCookie = SetCookie {
 	cookieExtension = []
 	}
 
-setUName :: BS.ByteString -> BS.ByteString -> BS.ByteString
-setUName un bs = case BSC.uncons bs of
-	Just ('$', cs) | "user_name" `BS.isPrefixOf` cs ->
-		un `BS.append` setUName un (BS.drop 9 cs)
-	Just (c, cs)  -> BSC.cons c $ setUName un cs
+setUName :: User -> BS.ByteString -> BS.ByteString
+setUName u@(User un) bs = case BSC.uncons bs of
+	Just ('$', cs) | "{user_name}" `BS.isPrefixOf` cs ->
+		un `BS.append` setUName u (BS.drop 11 cs)
+	Just (c, cs)  -> BSC.cons c $ setUName u cs
 	_ -> ""
-{-
-setUName un ('$' : cs)
-	| "user_name" `isPrefixOf` cs = unp un ++ setUName un (drop 9 cs)
-setUName un (c : cs) = c : setUName un cs
-setUName _ _ = ""
--}
 
 showFile :: PeyotlsHandle -> ContentType -> FilePath -> PeyotlsM ()
 showFile t ct fp = showPage t ct =<< liftIO (BS.readFile fp)
