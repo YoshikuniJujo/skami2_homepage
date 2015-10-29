@@ -94,9 +94,9 @@ resp r ut t rg = do
 	liftIO $ print pr
 	liftIO $ print c
 	case mh of
-		Just (Static pg) -> showFile t pg
+		Just (Static ct pg) -> showFile t ct pg
 		Just (Dynamic f) -> f t c pr s
-		_ -> error "badbadbad"
+		_ -> error $ "badbadbad:" ++ show pt
 
 pages :: [((Bool, Path), Page)]
 pages = [
@@ -104,27 +104,26 @@ pages = [
 	((False, Path "/login"), index),
 	((True, Path "/login"), login),
 	((False, Path "/logout"), logout),
-	((False, Path "/signup"), signupS),
+	((False, Path "/signup"), Static html "static/signup.html"),
 	((True, Path "/signup"), signup),
-	((False, Path "/activate"), activateS),
-	((True, Path "/activate"), activate) ]
+	((False, Path "/activate"), Static html "static/to_activate.html"),
+	((True, Path "/activate"), activate),
+	((False, Path "/robots.txt"), Static text "static/robots.txt")]
+
+html, text :: ContentType
+html = ContentType Text Html []
+text = ContentType Text Plain []
 
 data Page
-	= Static { static :: FilePath }
+	= Static { contentType :: ContentType, static :: FilePath }
 	| Dynamic {
 		dynamic :: PeyotlsHandle -> Cookie -> Pairs -> St -> PeyotlsM ()
 		}
-
-signupS :: Page
-signupS = Static "static/signup.html"
-
-activateS :: Page
-activateS = Static "static/to_activate.html"
 	
 index :: Page
 index = Dynamic $ \t c _ (ut, _) -> (io (getUser ut $ getUUID4 c) >>=)
-	. maybe (showFile t "static/index.html")
-	$ (=<< io (readFile "static/i_know.html")) . (showPage t .) . setUName
+	. maybe (showFile t html "static/index.html")
+	$ (=<< io (readFile "static/i_know.html")) . (showPage t html .) . setUName
 
 getPairs :: Body -> PeyotlsM Pairs
 getPairs b = pairs . maybe "" (>>= unp) <$> runPipe (b =$= toList)
@@ -135,7 +134,7 @@ login = Dynamic $ \t _ np (ut, g) -> do
 		(,) <$> lookup "user_name" np <*> lookup "user_password" np
 	mu <- io $ bool (return Nothing) (Just <$> addUser ut (uuid4IO g) n)
 		=<< checkHash (pck n) (pck p)
-	flip (maybe $ showFile t "static/index.html") mu $ \u -> do
+	flip (maybe $ showFile t html "static/index.html") mu $ \u -> do
 		m <- io $ setUName n <$> readFile "static/login.html"
 		setCookiePage t [m] $ cookie u
 
@@ -148,7 +147,7 @@ activate :: Page
 activate = Dynamic $ \t _ up _ -> do
 	let Just ak = lookup "activation_key" up
 	liftIO $ getActi ak >>= doActivate
-	showFile t "static/activated.html"
+	showFile t html "static/activated.html"
 
 getActi :: String -> IO (Maybe String)
 getActi s = do
@@ -180,9 +179,9 @@ signup = Dynamic $ \t _ up (_ut, rg) -> do
 		liftIO $ putStrLn un
 		liftIO $ putStrLn p
 		if cp /= "%E3%83%8F%E3%83%9F%E3%83%B3%E3%82%B0%E3%83%90%E3%83%BC%E3%83%89" || p /= rp
-		then showFile t "static/badcaptcha.html"
+		then showFile t html "static/badcaptcha.html"
 		else do	b <- liftIO $ mkAccount (BSC.pack un) (BSC.pack p)
-			showFile t $ if not b
+			showFile t html $ if not b
 				then "static/user_exist.html"
 				else "static/signup_done.html"
 			liftIO $ do
@@ -274,14 +273,13 @@ setUName un ('$' : cs)
 setUName un (c : cs) = c : setUName un cs
 setUName _ _ = ""
 
-showFile :: PeyotlsHandle -> FilePath -> PeyotlsM ()
-showFile t fp = showPage t =<< liftIO (readFile fp)
+showFile :: PeyotlsHandle -> ContentType -> FilePath -> PeyotlsM ()
+showFile t ct fp = showPage t ct =<< liftIO (readFile fp)
 
-showPage :: PeyotlsHandle -> String -> PeyotlsM ()
-showPage t as = putResponse t
+showPage :: PeyotlsHandle -> ContentType -> String -> PeyotlsM ()
+showPage t ct as = putResponse t
 	((response :: LBS.ByteString -> Response Pipe (TlsHandle Handle SystemRNG))
-	. LBS.fromChunks $ map BSU.fromString [as]) {
-		responseContentType = ContentType Text Html [] }
+	. LBS.fromChunks $ map BSU.fromString [as]) { responseContentType = ct }
 
 setCookiePage :: PeyotlsHandle -> [String] -> SetCookie -> PeyotlsM ()
 setCookiePage t as u = putResponse t
