@@ -1,13 +1,11 @@
 {-# LANGUAGE OverloadedStrings, PackageImports #-}
 
 import Control.Applicative ((<$>), (<*>))
-import Control.Arrow ((***))
 import "monads-tf" Control.Monad.State (
 	MonadIO, liftIO, forever, void, StateT(..), runStateT )
 import Control.Concurrent (forkIO)
 import Data.Bool (bool)
 import Data.Maybe (fromMaybe, listToMaybe)
-import Data.List (isPrefixOf)
 import Data.Char (isSpace)
 import Data.HandleLike (hlClose, HandleMonad)
 import Data.Pipe (Pipe, runPipe, await, (=$=))
@@ -15,7 +13,6 @@ import Data.Pipe.List (toList)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.Time (getZonedTime)
 import System.IO (Handle)
-import Numeric (showHex)
 import Network (PortID(..), listenOn, accept)
 import Network.PeyoTLS.Server (
 	CipherSuite, PeyotlsM, PeyotlsHandle, TlsHandle, run, open)
@@ -30,17 +27,16 @@ import "crypto-random" Crypto.Random (
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ByteString.Lazy as LBS
-import qualified Data.ByteString.UTF8 as BSU
 
 import UUID4 (UUID4, newGen, uuid4IO)
 import MakeHash
 import MailTo
 
 type Body = Pipe () BS.ByteString (HandleMonad PeyotlsHandle) ()
-type Pairs = [(String, String)]
-type Cookie = [(String, String)]
+type Pairs = [(BS.ByteString, BS.ByteString)]
+type Cookie = [(BS.ByteString, BS.ByteString)]
 type RndGen = IORef SystemRNG
-type UTable = IORef [(UUID4, String)]
+type UTable = IORef [(UUID4, BS.ByteString)]
 type St = (UTable, RndGen)
 
 cipherSuites :: [CipherSuite]
@@ -75,7 +71,7 @@ instance Eq Path where Path p1 == Path p2 = p1 == p2
 
 path :: Request PeyotlsHandle -> (Path, Maybe Pairs)
 path (RequestGet p@(Path b) _ _) = case span (/= '?') $ unp b of
-	(pt, '?' : pr) -> (Path $ pck pt, Just $ pairs pr)
+	(pt, '?' : pr) -> (Path $ pck pt, Just . pairs $ pck pr)
 	_ -> (p, Nothing)
 path (RequestPost p _ _) = (p, Nothing)
 path (RequestRaw _ p _ _) = (p, Nothing)
@@ -85,7 +81,7 @@ resp r ut t rg = do
 	pr_ <- getPairs $ requestBody r
 	let	(pt, mpr) = path r
 		pr = fromMaybe pr_ mpr
-		c = map (unp *** unp) $ case r of
+		c = case r of
 			RequestGet _ _ g -> getCookie g
 			RequestPost _ _ pst -> postCookie pst
 			_ -> []
@@ -123,36 +119,36 @@ data Page
 index :: Page
 index = Dynamic $ \t c _ (ut, _) -> (io (getUser ut $ getUUID4 c) >>=)
 	. maybe (showFile t html "static/index.html")
-	$ (=<< io (readFile "static/i_know.html")) . (showPage t html .) . setUName
+	$ (=<< io (BS.readFile "static/i_know.html")) . (showPage t html .) . setUName
 
 getPairs :: Body -> PeyotlsM Pairs
-getPairs b = pairs . maybe "" (>>= unp) <$> runPipe (b =$= toList)
+getPairs b = pairs . maybe "" BS.concat <$> runPipe (b =$= toList)
 
 login :: Page
 login = Dynamic $ \t _ np (ut, g) -> do
 	let Just (n, p) =
 		(,) <$> lookup "user_name" np <*> lookup "user_password" np
 	mu <- io $ bool (return Nothing) (Just <$> addUser ut (uuid4IO g) n)
-		=<< checkHash (pck n) (pck p)
+		=<< checkHash n p
 	flip (maybe $ showFile t html "static/index.html") mu $ \u -> do
-		m <- io $ setUName n <$> readFile "static/login.html"
+		m <- io $ setUName n <$> BS.readFile "static/login.html"
 		setCookiePage t [m] $ cookie u
 
 logout :: Page
 logout = Dynamic $ \t _ _ _ -> do
-	m <- io $ readFile "static/index.html"
+	m <- io $ BS.readFile "static/index.html"
 	setCookiePage t [m] logoutCookie
 
 activate :: Page
 activate = Dynamic $ \t _ up _ -> do
 	let Just ak = lookup "activation_key" up
-	liftIO $ getActi ak >>= doActivate
+	liftIO $ getActi ak >>= doActivate . (unp <$>)
 	showFile t html "static/activated.html"
 
-getActi :: String -> IO (Maybe String)
+getActi :: BS.ByteString -> IO (Maybe BS.ByteString)
 getActi s = do
-	c <- readFile "actidict.txt"
-	let d = map ((\[k, v] -> (k, v)) . words) $ lines c
+	c <- BS.readFile "actidict.txt"
+	let d = map ((\[k, v] -> (k, v)) . BSC.words) $ BSC.lines c
 	return $ lookup s d
 
 doActivate :: Maybe FilePath -> IO ()
@@ -174,13 +170,13 @@ signup = Dynamic $ \t _ up (_ut, rg) -> do
 			Just cp = lookup "captcha" up
 		liftIO $ print ma
 		liftIO . print $ p == rp
-		liftIO $ putStrLn cp
+		liftIO $ BSC.putStrLn cp
 		liftIO $ getZonedTime >>= print
-		liftIO $ putStrLn un
-		liftIO $ putStrLn p
+		liftIO $ BSC.putStrLn un
+		liftIO $ BSC.putStrLn p
 		if cp /= "%E3%83%8F%E3%83%9F%E3%83%B3%E3%82%B0%E3%83%90%E3%83%BC%E3%83%89" || p /= rp
 		then showFile t html "static/badcaptcha.html"
-		else do	b <- liftIO $ mkAccount (BSC.pack un) (BSC.pack p)
+		else do	b <- liftIO $ mkAccount un p
 			showFile t html $ if not b
 				then "static/user_exist.html"
 				else "static/signup_done.html"
@@ -190,11 +186,11 @@ signup = Dynamic $ \t _ up (_ut, rg) -> do
 				addActivate un uuid
 				mailTo ma uuid
 
-addActivate :: String -> UUID4 -> IO ()
+addActivate :: BS.ByteString -> UUID4 -> IO ()
 addActivate ac ui = do
 	c <- readFile "actidict.txt"
 	print c
-	writeFile "actidict.txt" $ c ++ show ui ++ " " ++ ac ++ "\n"
+	writeFile "actidict.txt" $ c ++ show ui ++ " " ++ (unp ac) ++ "\n"
 
 printP :: MonadIO m => Pipe BSC.ByteString () m ()
 printP = await >>= maybe (return ()) (\s -> liftIO (BSC.putStr s) >> printP)
@@ -223,23 +219,19 @@ split s (x : xs)
 	| otherwise = (x :) `heading` split s xs
 	where heading f (y : ys) = f y : ys; heading _ _ = error "bad"
 
-showH :: (Show a, Integral a) => a -> String
-showH n = replicate (2 - length s) '0' ++ s
-	where s = showHex n ""
-
-addUser :: UTable -> IO UUID4 -> String -> IO UUID4
+addUser :: UTable -> IO UUID4 -> BS.ByteString -> IO UUID4
 addUser ut gt nm = do
 	ssn <- readIORef ut
 	u <- gt
 	writeIORef ut $ (u, nm) : ssn
 	return u
 
-getUser :: UTable -> Maybe UUID4 -> IO (Maybe String)
+getUser :: UTable -> Maybe UUID4 -> IO (Maybe BS.ByteString)
 getUser ut (Just u) = lookup u <$> readIORef ut
 getUser _ _ = return Nothing
 
-getUUID4 :: [(String, String)] -> Maybe UUID4
-getUUID4 c = read . snd <$> listToMaybe c
+getUUID4 :: [(BS.ByteString, BS.ByteString)] -> Maybe UUID4
+getUUID4 c = read . unp . snd <$> listToMaybe c
 
 cookie :: UUID4 -> SetCookie
 cookie u = SetCookie {
@@ -267,30 +259,37 @@ logoutCookie = SetCookie {
 	cookieExtension = []
 	}
 
-setUName :: String -> String -> String
+setUName :: BS.ByteString -> BS.ByteString -> BS.ByteString
+setUName un bs = case BSC.uncons bs of
+	Just ('$', cs) | "user_name" `BS.isPrefixOf` cs ->
+		un `BS.append` setUName un (BS.drop 9 cs)
+	Just (c, cs)  -> BSC.cons c $ setUName un cs
+	_ -> ""
+{-
 setUName un ('$' : cs)
-	| "user_name" `isPrefixOf` cs = un ++ setUName un (drop 9 cs)
+	| "user_name" `isPrefixOf` cs = unp un ++ setUName un (drop 9 cs)
 setUName un (c : cs) = c : setUName un cs
 setUName _ _ = ""
+-}
 
 showFile :: PeyotlsHandle -> ContentType -> FilePath -> PeyotlsM ()
-showFile t ct fp = showPage t ct =<< liftIO (readFile fp)
+showFile t ct fp = showPage t ct =<< liftIO (BS.readFile fp)
 
-showPage :: PeyotlsHandle -> ContentType -> String -> PeyotlsM ()
+showPage :: PeyotlsHandle -> ContentType -> BS.ByteString -> PeyotlsM ()
 showPage t ct as = putResponse t
 	((response :: LBS.ByteString -> Response Pipe (TlsHandle Handle SystemRNG))
-	. LBS.fromChunks $ map BSU.fromString [as]) { responseContentType = ct }
+	$ LBS.fromChunks [as]) { responseContentType = ct }
 
-setCookiePage :: PeyotlsHandle -> [String] -> SetCookie -> PeyotlsM ()
+setCookiePage :: PeyotlsHandle -> [BS.ByteString] -> SetCookie -> PeyotlsM ()
 setCookiePage t as u = putResponse t
 	((response :: LBS.ByteString -> Response Pipe (TlsHandle Handle SystemRNG))
-	. LBS.fromChunks $ map BSU.fromString as) {
+	$ LBS.fromChunks as) {
 		responseContentType = ContentType Text Html [],
 		responseSetCookie = [u] }
 
-pairs :: String -> Pairs
-pairs s = (`map` filter (any $ not . isSpace) (split '&' s)) $ \ss ->
-	case split '=' ss of
+pairs :: BS.ByteString -> Pairs
+pairs s = (`map` filter (BSC.any $ not . isSpace) (BSC.split '&' s)) $ \ss ->
+	case BSC.split '=' ss of
 		[n, v] -> (n, v)
 		_ -> error $ "pairs: bad " ++ show ss
 
