@@ -5,7 +5,7 @@ import "monads-tf" Control.Monad.State (
 	MonadIO, liftIO, forever, void, StateT(..), runStateT )
 import Control.Concurrent (forkIO)
 import Data.Bool (bool)
-import Data.Maybe (fromMaybe, listToMaybe)
+import Data.Maybe (fromMaybe, fromJust, maybeToList, listToMaybe)
 import Data.Char (isSpace)
 import Data.HandleLike (hlClose, HandleMonad)
 import Data.Pipe (Pipe, runPipe, await, (=$=))
@@ -24,10 +24,12 @@ import Network.TigHTTP.Types (
 	StatusCode(..) )
 import "crypto-random" Crypto.Random (
 	SystemRNG, createEntropyPool, cprgCreate, cprgFork )
+import Text.Template (template)
 
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ByteString.Lazy as LBS
+-- import qualified Data.Text as T
 
 import UUID4 (UUID4, newGen, uuid4IO)
 import MakeHash
@@ -129,7 +131,7 @@ data Page
 data User = User BS.ByteString deriving Show
 
 index :: PeyotlsHandle -> Maybe User -> Pairs -> St -> PeyotlsM ()
-index t (Just u) _ _ = showPage t html . setUName u =<<
+index t (Just u) _ _ = showPage t html =<< io . setUName u =<<
 	io (BS.readFile "static/i_know.html")
 index t _ _ _ = showFile t html "static/index.html"
 
@@ -143,7 +145,7 @@ login t _ np (ut, g) = do
 	mu <- io $ bool (return Nothing) (Just <$> addUser ut (uuid4IO g) n)
 		=<< checkHash n p
 	flip (maybe $ showFile t html "static/index.html") mu $ \u -> do
-		m <- io $ setUName (User n) <$> BS.readFile "static/login.html"
+		m <- io $ setUName (User n) =<< BS.readFile "static/login.html"
 		setCookiePage t [m] $ cookie u
 
 logout :: Page
@@ -250,7 +252,7 @@ cookie u = SetCookie {
 	cookieName = "uuid",
 	cookieValue = BSC.pack $ show u,
 	cookieExpires = Nothing,
-	cookieMaxAge = Just 60,
+	cookieMaxAge = Just 600,
 	cookieDomain = Just "skami2.iocikun.jp",
 	cookiePath = Just "/",
 	cookieSecure = True,
@@ -271,12 +273,14 @@ logoutCookie = SetCookie {
 	cookieExtension = []
 	}
 
-setUName :: User -> BS.ByteString -> BS.ByteString
-setUName u@(User un) bs = case BSC.uncons bs of
-	Just ('$', cs) | "{user_name}" `BS.isPrefixOf` cs ->
-		un `BS.append` setUName u (BS.drop 11 cs)
-	Just (c, cs)  -> BSC.cons c $ setUName u cs
-	_ -> ""
+setUName :: User -> BS.ByteString -> IO BS.ByteString
+setUName (User un) t = do
+	fromJust <$> template
+		(\s -> maybeToList $ lookup s [
+			("user_name", un),
+			("mail_address", "foo@bar.ne.jp")])
+--		(\s -> case s of "user_name" -> [un]; _ -> [""])
+		(const $ return [""]) t
 
 showFile :: PeyotlsHandle -> ContentType -> FilePath -> PeyotlsM ()
 showFile t ct fp = showPage t ct =<< liftIO (BS.readFile fp)
