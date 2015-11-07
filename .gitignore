@@ -3,3 +3,5 @@ password*
 *.o
 *.hi
 /servers3
+/mkTable
+/accounts.sqlite3

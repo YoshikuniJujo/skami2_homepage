@@ -8,7 +8,7 @@ import Data.Bool (bool)
 import Data.Maybe (fromMaybe, fromJust, maybeToList, listToMaybe)
 import Data.Char (isSpace)
 import Data.HandleLike (hlClose, HandleMonad)
-import Data.Pipe (Pipe, runPipe, await, (=$=))
+import Data.Pipe (Pipe, runPipe, (=$=))
 import Data.Pipe.List (toList)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.Time (getZonedTime)
@@ -35,9 +35,11 @@ import UUID4 (UUID4, newGen, uuid4IO)
 import MakeHash
 import MailTo
 
+import qualified Account as Acc
+
 type Body = Pipe () BS.ByteString (HandleMonad PeyotlsHandle) ()
 type Pairs = [(BS.ByteString, BS.ByteString)]
-type Cookie = [(BS.ByteString, BS.ByteString)]
+-- type Cookie = [(BS.ByteString, BS.ByteString)]
 type RndGen = IORef SystemRNG
 type UTable = IORef [(UUID4, BS.ByteString)]
 type St = (UTable, RndGen)
@@ -93,13 +95,15 @@ resp r ut t rg = do
 	liftIO $ print pr
 	liftIO $ print c
 	mu <- (User <$>) <$> io (getUser ut $ getUUID4 c)
+	conn <- liftIO Acc.open
 	case mh of
 		Just (Static ct pg) -> showFile t ct pg
-		Just (Dynamic f) -> f t mu pr s
+		Just (Dynamic f) -> f t conn mu pr s
 		_ -> do	io . putStrLn $ "badbadbad:" ++ show pt
 			putResponse t (response' $ LBS.fromChunks ["404 File not found"]) {
 				responseStatusCode = NotFound,
 				responseContentType = text }
+	liftIO $ Acc.close conn
 
 response' :: LBS.ByteString -> Response Pipe PeyotlsHandle
 response' = response
@@ -125,38 +129,43 @@ ico = ContentType (TypeRaw "image") (SubtypeRaw "vnd.microsoft.icon") []
 data Page
 	= Static { contentType :: ContentType, static :: FilePath }
 	| Dynamic {
-		dynamic :: PeyotlsHandle -> Maybe User -> Pairs -> St -> PeyotlsM ()
+		dynamic :: PeyotlsHandle -> Acc.Connection ->
+			Maybe User -> Pairs -> St -> PeyotlsM ()
 		}
 
 data User = User BS.ByteString deriving Show
 
-index :: PeyotlsHandle -> Maybe User -> Pairs -> St -> PeyotlsM ()
-index t (Just u) _ _ = showPage t html =<< io . setUName u =<<
+index :: PeyotlsHandle ->
+	Acc.Connection -> Maybe User -> Pairs -> St -> PeyotlsM ()
+index t conn (Just u) _ _ = showPage t html =<< io . setUName u =<<
 	io (BS.readFile "static/i_know.html")
-index t _ _ _ = showFile t html "static/index.html"
+index t conn _ _ _ = showFile t html "static/index.html"
 
 getPairs :: Body -> PeyotlsM Pairs
 getPairs b = pairs . maybe "" BS.concat <$> runPipe (b =$= toList)
 
-login :: PeyotlsHandle -> Maybe User -> Pairs -> St -> PeyotlsM ()
-login t _ np (ut, g) = do
+login :: PeyotlsHandle ->
+	Acc.Connection -> Maybe User -> Pairs -> St -> PeyotlsM ()
+login t conn _ np (ut, g) = do
 	let Just (n, p) =
 		(,) <$> lookup "user_name" np <*> lookup "user_password" np
 	mu <- io $ bool (return Nothing) (Just <$> addUser ut (uuid4IO g) n)
-		=<< checkHash n p
+--		=<< checkHash n p
+		=<< Acc.checkLogin conn (Acc.UserName n) (Acc.Password p)
 	flip (maybe $ showFile t html "static/index.html") mu $ \u -> do
 		m <- io $ setUName (User n) =<< BS.readFile "static/login.html"
 		setCookiePage t [m] $ cookie u
 
 logout :: Page
-logout = Dynamic $ \t _ _ _ -> do
+logout = Dynamic $ \t conn _ _ _ -> do
 	m <- io $ BS.readFile "static/index.html"
 	setCookiePage t [m] logoutCookie
 
 activate :: Page
-activate = Dynamic $ \t _ up _ -> do
+activate = Dynamic $ \t conn _ up _ -> do
 	let Just ak = lookup "activation_key" up
 	liftIO $ getActi ak >>= doActivate . (unp <$>)
+	liftIO $ Acc.activate conn (read $ unp ak)
 	showFile t html "static/activated.html"
 
 getActi :: BS.ByteString -> IO (Maybe BS.ByteString)
@@ -176,7 +185,7 @@ doActivate (Just fp) = do
 doActivate _ = return ()
 
 signup :: Page
-signup = Dynamic $ \t _ up (_ut, rg) -> do
+signup = Dynamic $ \t conn _ up (_ut, _rg) -> do
 		let	Just un = lookup "user_name" up
 			Just ma = lookup "mail_address" up
 			Just p = lookup "user_password" up
@@ -190,22 +199,27 @@ signup = Dynamic $ \t _ up (_ut, rg) -> do
 		liftIO $ BSC.putStrLn p
 		if cp /= "%E3%83%8F%E3%83%9F%E3%83%B3%E3%82%B0%E3%83%90%E3%83%BC%E3%83%89" || p /= rp
 		then showFile t html "static/badcaptcha.html"
-		else do	b <- liftIO $ mkAccount un p
-			showFile t html $ if not b
-				then "static/user_exist.html"
-				else "static/signup_done.html"
-			liftIO $ do
-				uuid <- uuid4IO rg
-				print uuid
-				addActivate un uuid
-				mailTo ma uuid
+		else do	_ <- liftIO $ mkAccount un p
+			ret <- liftIO $ Acc.newAccount conn
+				(Acc.UserName un) (Acc.MailAddress ma)
+				(Acc.Password p)
+			case ret of
+				Left _ -> showFile t html "static/user_exist.html"
+				Right uuid -> do
+					showFile t html "static/signup_done.html"
+					liftIO $ do
+					--	uuid <- uuid4IO rg
+						print uuid
+						addActivate un uuid
+						mailTo ma uuid
 
 addActivate :: BS.ByteString -> UUID4 -> IO ()
 addActivate ac ui = do
 	c <- readFile "actidict.txt"
 	print c
-	writeFile "actidict.txt" $ c ++ show ui ++ " " ++ (unp ac) ++ "\n"
+	writeFile "actidict.txt" $ c ++ show ui ++ " " ++ unp ac ++ "\n"
 
+{-
 printP :: MonadIO m => Pipe BSC.ByteString () m ()
 printP = await >>= maybe (return ()) (\s -> liftIO (BSC.putStr s) >> printP)
 
@@ -232,6 +246,7 @@ split s (x : xs)
 	| x == s = [] : split s xs
 	| otherwise = (x :) `heading` split s xs
 	where heading f (y : ys) = f y : ys; heading _ _ = error "bad"
+	-}
 
 addUser :: UTable -> IO UUID4 -> BS.ByteString -> IO UUID4
 addUser ut gt nm = do
@@ -274,8 +289,7 @@ logoutCookie = SetCookie {
 	}
 
 setUName :: User -> BS.ByteString -> IO BS.ByteString
-setUName (User un) t = do
-	fromJust <$> template
+setUName (User un) t = fromJust <$> template
 		(\s -> maybeToList $ lookup s [
 			("user_name", un),
 			("mail_address", "foo@bar.ne.jp")])

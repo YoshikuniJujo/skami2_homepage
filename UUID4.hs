@@ -1,4 +1,4 @@
-module UUID4 (UUID4, newGen, uuid4IO) where
+module UUID4 (UUID4(..), newGen, uuid4IO) where
 
 import Control.Applicative
 import Control.Arrow
