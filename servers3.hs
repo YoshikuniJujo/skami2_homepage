@@ -137,7 +137,7 @@ data User = User BS.ByteString deriving Show
 
 index :: PeyotlsHandle ->
 	Acc.Connection -> Maybe User -> Pairs -> St -> PeyotlsM ()
-index t conn (Just u) _ _ = showPage t html =<< io . setUName u =<<
+index t conn (Just u) _ _ = showPage t html =<< io . setUName conn u =<<
 	io (BS.readFile "static/i_know.html")
 index t conn _ _ _ = showFile t html "static/index.html"
 
@@ -152,8 +152,9 @@ login t conn _ np (ut, g) = do
 	mu <- io $ bool (return Nothing) (Just <$> addUser ut (uuid4IO g) n)
 --		=<< checkHash n p
 		=<< Acc.checkLogin conn (Acc.UserName n) (Acc.Password p)
+	liftIO $ print mu
 	flip (maybe $ showFile t html "static/index.html") mu $ \u -> do
-		m <- io $ setUName (User n) =<< BS.readFile "static/login.html"
+		m <- io $ setUName conn (User n) =<< BS.readFile "static/login.html"
 		setCookiePage t [m] $ cookie u
 
 logout :: Page
@@ -288,11 +289,14 @@ logoutCookie = SetCookie {
 	cookieExtension = []
 	}
 
-setUName :: User -> BS.ByteString -> IO BS.ByteString
-setUName (User un) t = fromJust <$> template
+setUName :: Acc.Connection -> User -> BS.ByteString -> IO BS.ByteString
+setUName conn (User un) t = do
+	ma <- Acc.mailAddress conn (Acc.UserName un)
+	fromJust <$> template
 		(\s -> maybeToList $ lookup s [
 			("user_name", un),
-			("mail_address", "foo@bar.ne.jp")])
+			("mail_address", maybe "no address"
+				(\(Acc.MailAddress a) -> a) ma)])
 --		(\s -> case s of "user_name" -> [un]; _ -> [""])
 		(const $ return [""]) t
 
