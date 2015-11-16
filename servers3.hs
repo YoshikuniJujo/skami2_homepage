@@ -57,8 +57,8 @@ cipherSuites = [
 main :: IO ()
 main = do
 	(k, c, g0, ut, rg) <- (,,,,)
-		<$> readKey "2014_private_de.key"
-		<*> readCertificateChain ["2014_cert.pem"]
+		<$> readKey "2015_skami2.key"
+		<*> readCertificateChain ["2015_skami2.cert", "2015_skami2.int"]
 		<*> (cprgCreate <$> createEntropyPool :: IO SystemRNG)
 		<*> newIORef []
 		<*> (newIORef =<< newGen)
@@ -111,6 +111,7 @@ response' = response
 pages :: [((Bool, Path), Page)]
 pages = [
 	((False, Path "/"), Dynamic index),
+	((True, Path "/"), Dynamic index),
 	((False, Path "/login"), Dynamic index),
 	((True, Path "/login"), Dynamic login),
 	((False, Path "/logout"), logout),
@@ -137,8 +138,13 @@ data User = User BS.ByteString deriving Show
 
 index :: PeyotlsHandle ->
 	Acc.Connection -> Maybe User -> Pairs -> St -> PeyotlsM ()
-index t conn (Just u) _ _ = showPage t html =<< io . setUName conn u =<<
-	io (BS.readFile "static/i_know.html")
+index t conn (Just u@(User un)) ps _ = do
+	io . putStrLn $ "index: " ++ show ps
+	io $ case lookup "request" ps of
+		Just r -> Acc.insertRequest conn (Acc.UserName un) r
+		_ -> return ()
+	showPage t html =<< io . setUName conn u =<<
+		io (BS.readFile "static/i_know.html")
 index t conn _ _ _ = showFile t html "static/index.html"
 
 getPairs :: Body -> PeyotlsM Pairs
@@ -154,7 +160,7 @@ login t conn _ np (ut, g) = do
 		=<< Acc.checkLogin conn (Acc.UserName n) (Acc.Password p)
 	liftIO $ print mu
 	flip (maybe $ showFile t html "static/index.html") mu $ \u -> do
-		m <- io $ setUName conn (User n) =<< BS.readFile "static/login.html"
+		m <- io $ setUName conn (User n) =<< BS.readFile "static/i_know.html"
 		setCookiePage t [m] $ cookie u
 
 logout :: Page
@@ -268,7 +274,7 @@ cookie u = SetCookie {
 	cookieName = "uuid",
 	cookieValue = BSC.pack $ show u,
 	cookieExpires = Nothing,
-	cookieMaxAge = Just 600,
+	cookieMaxAge = Just 3600,
 	cookieDomain = Just "skami2.iocikun.jp",
 	cookiePath = Just "/",
 	cookieSecure = True,

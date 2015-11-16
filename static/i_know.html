@@ -10,11 +10,23 @@
 
 <h1>HummingBird</h1>
 
-<p>Hello ${user_name}</p>
+<p>
 
-<p>Your mail address is ${mail_address}</p>
+<a href="/">home</a>
 
-<p><a href="/logout">logout</a></p>
+${user_name} ${mail_address}
+
+<a href="/logout">logout</a>
+
+</p>
+
+<form action="/">
+
+<p>
+<input type="text" name="request" size="60" />
+<input type="submit" value="依頼" /></p>
+
+</form>
 
 </body>
 

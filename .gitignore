@@ -4,4 +4,6 @@ password*
 *.hi
 /servers3
 /mkTable
+/mktAccount
+/mktRequest
 /accounts.sqlite3

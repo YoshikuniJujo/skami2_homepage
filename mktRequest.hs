@@ -6,5 +6,5 @@ main = newTable
 newTable :: IO ()
 newTable = do
 	conn <- DB.open
-	DB.newTable conn
+	DB.mktRequest conn
 	DB.close conn

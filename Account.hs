@@ -1,8 +1,11 @@
 {-# LANGUAGE OverloadedStrings, PackageImports #-}
 
 module Account (
-	Connection, UserName(..), MailAddress(..), Password(..), MkAccErr(..),
+	Connection, connection,
+	UserName(..), MailAddress(..), Password(..), MkAccErr(..),
 	open, close, newAccount, rmAccount, activate, checkLogin, mailAddress,
+
+	insertRequest, DB.allRequests
 	) where
 
 import Control.Applicative
@@ -122,3 +125,8 @@ mailAddress conn (UserName nm) = do
 	let stmt = stmtMailAddress conn
 	DB.bindStmt stmt "name" nm
 	(MailAddress <$>) <$> DB.getStmt stmt
+
+insertRequest :: Connection -> UserName -> BS.ByteString -> IO ()
+insertRequest conn (UserName nm) r = do
+	UUID4 uu <- uuid4IO $ connCprg conn
+	DB.insertRequest (connection conn) uu nm r

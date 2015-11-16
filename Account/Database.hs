@@ -2,13 +2,15 @@
 
 module Account.Database (
 	SQLite, Stmt,
-	open, close, newTable, bindStmt, runStmt, getSaltHash,
+	open, close, mktAccount, bindStmt, runStmt, getSaltHash,
 	mkAccount, rmAccount,
 	finalizeStmt,
 	saltHash,
 	existStmt,
 	checkName, checkAddress, setActivate, getMailAddress,
 	getStmt,
+
+	mktRequest, insertRequest, allRequests,
 	) where
 
 import Control.Applicative
@@ -90,13 +92,43 @@ existStmt (Stmt stmt) = do
 	c_sqlite3Reset stmt
 	return b
 
-stmtNewTable :: BS.ByteString
-stmtNewTable = "CREATE TABLE account (" `BS.append`
+stmtMktAccount :: BS.ByteString
+stmtMktAccount = "CREATE TABLE account (" `BS.append`
 	"name PRIMARY KEY, " `BS.append`
 	"salt, hash, mail_address, act_key, activated)"
 
-newTable :: SQLite -> IO ()
-newTable conn = bracket (mkStmt conn stmtNewTable) finalizeStmt runStmt
+stmtForeignKeysOn :: BS.ByteString
+stmtForeignKeysOn = "PRAGMA foreign_keys = ON"
+
+stmtMktRequest :: BS.ByteString
+stmtMktRequest = "CREATE TABLE request(" `BS.append`
+	"req_id PRIMARY KEY, " `BS.append`
+	"requester, req_description, " `BS.append`
+	"FOREIGN KEY(requester) REFERENCES account(name))"
+
+stmtInsertRequest :: BS.ByteString
+stmtInsertRequest =
+	"INSERT INTO request(req_id, requester, req_description) " `BS.append`
+		"VALUES(:req_id, :requester, :req_description)"
+
+stmtAllRequests :: BS.ByteString
+stmtAllRequests = "SELECT (requester, req_description) FROM request"
+
+mktAccount :: SQLite -> IO ()
+mktAccount conn = bracket (mkStmt conn stmtMktAccount) finalizeStmt runStmt
+
+mktRequest :: SQLite -> IO ()
+mktRequest conn = do
+	bracket (mkStmt conn stmtForeignKeysOn) finalizeStmt runStmt
+	bracket (mkStmt conn stmtMktRequest) finalizeStmt runStmt
+
+insertRequest :: SQLite -> BS.ByteString -> BS.ByteString -> BS.ByteString -> IO ()
+insertRequest conn uu nm dsc =
+	bracket (mkStmt conn stmtInsertRequest) finalizeStmt $ \stmt -> do
+		bindStmt stmt "req_id" uu
+		bindStmt stmt "requester" nm
+		bindStmt stmt "req_description" dsc
+		runStmt stmt
 
 stmtSaltHash :: BS.ByteString
 stmtSaltHash =
@@ -109,6 +141,9 @@ getSaltHash :: Stmt -> BS.ByteString -> IO (BS.ByteString, BS.ByteString)
 getSaltHash stmt nm = (\act -> bracket act (const $ return ()) get2Stmt) $ do
 	bindStmt stmt "name" nm
 	return stmt
+
+allRequests :: SQLite -> IO (BS.ByteString, BS.ByteString)
+allRequests conn = get2Stmt =<< mkStmt conn stmtAllRequests
 
 stmtMkAccount :: BS.ByteString
 stmtMkAccount = "INSERT INTO account (" `BS.append`
