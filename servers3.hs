@@ -102,7 +102,8 @@ resp r ut t rg = do
 		_ -> do	io . putStrLn $ "badbadbad:" ++ show pt
 			putResponse t (response' $ LBS.fromChunks ["404 File not found"]) {
 				responseStatusCode = NotFound,
-				responseContentType = text }
+				responseContentType = text,
+				responseOthers = hsts }
 	liftIO $ Acc.close conn
 
 response' :: LBS.ByteString -> Response Pipe PeyotlsHandle
@@ -312,14 +313,15 @@ showFile t ct fp = showPage t ct =<< liftIO (BS.readFile fp)
 showPage :: PeyotlsHandle -> ContentType -> BS.ByteString -> PeyotlsM ()
 showPage t ct as = putResponse t
 	((response :: LBS.ByteString -> Response Pipe (TlsHandle Handle SystemRNG))
-	$ LBS.fromChunks [as]) { responseContentType = ct }
+	$ LBS.fromChunks [as]) { responseContentType = ct, responseOthers = hsts }
 
 setCookiePage :: PeyotlsHandle -> [BS.ByteString] -> SetCookie -> PeyotlsM ()
 setCookiePage t as u = putResponse t
 	((response :: LBS.ByteString -> Response Pipe (TlsHandle Handle SystemRNG))
 	$ LBS.fromChunks as) {
 		responseContentType = ContentType Text Html [],
-		responseSetCookie = [u] }
+		responseSetCookie = [u],
+		responseOthers = hsts }
 
 pairs :: BS.ByteString -> Pairs
 pairs s = (`map` filter (BSC.any $ not . isSpace) (BSC.split '&' s)) $ \ss ->
@@ -335,3 +337,9 @@ pck = BSC.pack
 
 io :: MonadIO m => IO a -> m a
 io = liftIO
+
+hsts :: [(BSC.ByteString, BSC.ByteString)]
+hsts = [
+	("Strict-Transport-Security",
+		"max-age=31536000; includeSubDomains; preload")
+	]

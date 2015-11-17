@@ -10,6 +10,7 @@ module Account (
 
 import Control.Applicative
 import qualified Data.ByteString as BS
+import qualified Data.ByteString.Char8 as BSC
 import Data.IORef
 import "crypto-random" Crypto.Random
 
@@ -128,5 +129,7 @@ mailAddress conn (UserName nm) = do
 
 insertRequest :: Connection -> UserName -> BS.ByteString -> IO ()
 insertRequest conn (UserName nm) r = do
-	UUID4 uu <- uuid4IO $ connCprg conn
-	DB.insertRequest (connection conn) uu nm r
+	uu <- uuid4IO $ connCprg conn
+	DB.insertRequest (connection conn)
+		(BSC.pack $ show uu)
+		nm r
