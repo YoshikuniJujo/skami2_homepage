@@ -85,7 +85,7 @@ newAccount conn un@(UserName nm) ma@(MailAddress addr) psw = do
 			u@(UUID4 uu) <- uuid4IO $ connCprg conn
 			DB.bindStmt stmt "name" nm
 			DB.bindStmt stmt "mail_address" addr
-			DB.bindStmt stmt "act_key" uu
+			DB.bindStmt stmt "act_key" . BSC.pack $ show u -- uu
 			(slt, hs) <- createHash psw
 			setSalt stmt slt
 			setHash stmt hs
@@ -112,10 +112,15 @@ rmAccount conn (UserName nm) = do
 	DB.runStmt stmt
 
 activate :: Connection -> UUID4 -> IO ()
-activate conn (UUID4 uu) = do
-	let stmt = stmtSetActive conn
-	DB.bindStmt stmt "act_key" uu
-	DB.runStmt stmt
+activate conn u = do
+	_ <- withSQLite "accounts.sqlite3" $ \db ->
+		withPrepared db qSetActivate $ \sm -> do
+			bind sm ":act_key" $ show u
+			step sm
+	print u
+
+qSetActivate :: String
+qSetActivate = "UPDATE account SET activated = 1 where act_key = :act_key"
 
 qSaltHash :: String
 qSaltHash = "SELECT salt, hash FROM account WHERE name = :name AND activated = 1"
