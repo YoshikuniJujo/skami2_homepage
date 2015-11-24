@@ -158,7 +158,7 @@ login t conn _ np (ut, g) = do
 		(,) <$> lookup "user_name" np <*> lookup "user_password" np
 	mu <- io $ bool (return Nothing) (Just <$> addUser ut (uuid4IO g) n)
 --		=<< checkHash n p
-		=<< Acc.checkLogin conn (Acc.UserName n) (Acc.Password p)
+		=<< Acc.chkLogin (Acc.UserName n) (Acc.Password p)
 	liftIO $ print mu
 	flip (maybe $ showFile t html "static/index.html") mu $ \u -> do
 		m <- io $ setUName conn (User n) =<< BS.readFile "static/i_know.html"

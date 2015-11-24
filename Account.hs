@@ -3,7 +3,7 @@
 module Account (
 	Connection, connection,
 	UserName(..), MailAddress(..), Password(..), MkAccErr(..),
-	open, close, newAccount, rmAccount, activate, checkLogin, mailAddress,
+	open, close, newAccount, rmAccount, activate, chkLogin, mailAddress,
 
 	insertRequest, DB.allRequests
 	) where
@@ -17,6 +17,8 @@ import "crypto-random" Crypto.Random
 import qualified Account.Database as DB
 import Account.Hash
 import UUID4
+
+import Database.SmplstSQLite3
 
 data Connection = Connection {
 	connection :: DB.SQLite,
@@ -115,10 +117,15 @@ activate conn (UUID4 uu) = do
 	DB.bindStmt stmt "act_key" uu
 	DB.runStmt stmt
 
-checkLogin :: Connection -> UserName -> Password -> IO Bool
-checkLogin conn (UserName nm) psw = do
-	(s, h) <- getSaltHash (stmtGetSaltHash conn) nm
-	return $ checkHash psw s h
+qSaltHash :: String
+qSaltHash = "SELECT salt, hash FROM account WHERE name = :name AND activated = 1"
+
+chkLogin :: UserName -> Password -> IO Bool
+chkLogin (UserName n) pw = (fst <$>) . withSQLite "accounts.sqlite3" $ \db ->
+	withPrepared db qSaltHash $ \sm -> do
+		bind sm ":name" (BSC.unpack n)
+		_ <- step sm
+		chkHash pw <$> (Salt <$> column sm 0) <*> (Hash <$> column sm 1)
 
 mailAddress :: Connection -> UserName -> IO (Maybe MailAddress)
 	-- (Either DeriveError MailAddress)

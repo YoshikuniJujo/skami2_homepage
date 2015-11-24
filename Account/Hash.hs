@@ -1,7 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 module Account.Hash (
-	Password(..), Salt, Hash, createHash, checkHash,
+	Password(..), Salt(..), Hash(..), createHash, chkHash,
 	setSalt, setHash, getSaltHash,
 	) where
 
@@ -22,8 +22,8 @@ newtype Hash = Hash BS.ByteString deriving (Show, Eq)
 createHash :: Password -> IO (Salt, Hash)
 createHash p = (id &&& mkHash p) <$> getSalt
 
-checkHash :: Password -> Salt -> Hash -> Bool
-checkHash p s h = mkHash p s == h
+chkHash :: Password -> Salt -> Hash -> Bool
+chkHash p s h = mkHash p s == h
 
 mkHash :: Password -> Salt -> Hash
 mkHash (Password p) (Salt s) =
