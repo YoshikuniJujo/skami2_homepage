@@ -104,7 +104,6 @@ resp r ut t rg = do
 				responseStatusCode = NotFound,
 				responseContentType = text,
 				responseOthers = hsts }
-	liftIO $ Acc.close conn
 
 response' :: LBS.ByteString -> Response Pipe PeyotlsHandle
 response' = response
@@ -144,16 +143,15 @@ index t conn (Just u@(User un)) ps _ = do
 	io $ case lookup "request" ps of
 		Just r -> Acc.insertRequest conn (Acc.UserName un) r
 		_ -> return ()
-	showPage t html =<< io . setUName conn u =<<
+	showPage t html =<< io . setUName u =<<
 		io (BS.readFile "static/i_know.html")
-index t conn _ _ _ = showFile t html "static/index.html"
+index t _ _ _ _ = showFile t html "static/index.html"
 
 getPairs :: Body -> PeyotlsM Pairs
 getPairs b = pairs . maybe "" BS.concat <$> runPipe (b =$= toList)
 
-login :: PeyotlsHandle ->
-	Acc.Connection -> Maybe User -> Pairs -> St -> PeyotlsM ()
-login t conn _ np (ut, g) = do
+login :: PeyotlsHandle -> Acc.Connection -> Maybe User -> Pairs -> St -> PeyotlsM ()
+login t _ _ np (ut, g) = do
 	let Just (n, p) =
 		(,) <$> lookup "user_name" np <*> lookup "user_password" np
 	mu <- io $ bool (return Nothing) (Just <$> addUser ut (uuid4IO g) n)
@@ -161,19 +159,19 @@ login t conn _ np (ut, g) = do
 		=<< Acc.chkLogin (Acc.UserName n) (Acc.Password p)
 	liftIO $ print mu
 	flip (maybe $ showFile t html "static/index.html") mu $ \u -> do
-		m <- io $ setUName conn (User n) =<< BS.readFile "static/i_know.html"
+		m <- io $ setUName (User n) =<< BS.readFile "static/i_know.html"
 		setCookiePage t [m] $ cookie u
 
 logout :: Page
-logout = Dynamic $ \t conn _ _ _ -> do
+logout = Dynamic $ \t _ _ _ _ -> do
 	m <- io $ BS.readFile "static/index.html"
 	setCookiePage t [m] logoutCookie
 
 activate :: Page
-activate = Dynamic $ \t conn _ up _ -> do
+activate = Dynamic $ \t _ _ up _ -> do
 	let Just ak = lookup "activation_key" up
 	liftIO $ getActi ak >>= doActivate . (unp <$>)
-	liftIO $ Acc.activate conn (read $ unp ak)
+	liftIO $ Acc.activate (read $ unp ak)
 	showFile t html "static/activated.html"
 
 getActi :: BS.ByteString -> IO (Maybe BS.ByteString)
@@ -296,9 +294,9 @@ logoutCookie = SetCookie {
 	cookieExtension = []
 	}
 
-setUName :: Acc.Connection -> User -> BS.ByteString -> IO BS.ByteString
-setUName conn (User un) t = do
-	ma <- Acc.mailAddress conn (Acc.UserName un)
+setUName :: User -> BS.ByteString -> IO BS.ByteString
+setUName (User un) t = do
+	ma <- Acc.mailAddress (Acc.UserName un)
 	fromJust <$> template
 		(\s -> maybeToList $ lookup s [
 			("user_name", un),

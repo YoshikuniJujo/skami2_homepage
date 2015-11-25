@@ -2,7 +2,6 @@
 
 module Account.Hash (
 	Password(..), Salt(..), Hash(..), createHash, chkHash,
-	setSalt, setHash, getSaltHash,
 	) where
 
 import Control.Applicative
@@ -12,8 +11,6 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
 import System.Random
 import qualified Crypto.Hash.SHA256 as SHA256
-
-import qualified Account.Database as DB
 
 newtype Password = Password BS.ByteString deriving Show
 newtype Salt = Salt BS.ByteString deriving Show
@@ -31,12 +28,3 @@ mkHash (Password p) (Salt s) =
 
 getSalt :: IO Salt
 getSalt = Salt . BSC.pack . show <$> (randomIO :: IO Word64)
-
-setSalt :: DB.Stmt -> Salt -> IO ()
-setSalt stmt (Salt slt) = DB.bindStmt stmt "salt" slt
-
-setHash :: DB.Stmt -> Hash -> IO ()
-setHash stmt (Hash hs) = DB.bindStmt stmt "hash" hs
-
-getSaltHash :: DB.Stmt -> BS.ByteString -> IO (Salt, Hash)
-getSaltHash stmt nm = (Salt *** Hash) <$> DB.getSaltHash stmt nm

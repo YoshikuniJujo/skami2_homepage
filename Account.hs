@@ -1,11 +1,11 @@
 {-# LANGUAGE OverloadedStrings, PackageImports #-}
 
 module Account (
-	Connection, connection,
+	Connection,
 	UserName(..), MailAddress(..), Password(..), MkAccErr(..),
-	open, close, newAccount, rmAccount, activate, chkLogin, mailAddress,
+	open, newAccount, activate, chkLogin, mailAddress,
 
-	insertRequest, DB.allRequests
+	insertRequest,
 	) where
 
 import Control.Applicative
@@ -14,23 +14,12 @@ import qualified Data.ByteString.Char8 as BSC
 import Data.IORef
 import "crypto-random" Crypto.Random
 
-import qualified Account.Database as DB
 import Account.Hash
 import UUID4
 
 import Database.SmplstSQLite3
 
-data Connection = Connection {
-	connection :: DB.SQLite,
-	connCprg :: IORef SystemRNG,
-	stmtNewAccount :: DB.Stmt,
-	stmtCheckName :: DB.Stmt,
-	stmtCheckAddress :: DB.Stmt,
-	stmtRemoveAccount :: DB.Stmt,
-	stmtSetActive :: DB.Stmt,
-	stmtGetSaltHash :: DB.Stmt,
-	stmtMailAddress :: DB.Stmt
-	}
+data Connection = Connection { connCprg :: IORef SystemRNG }
 
 data UserName = UserName BS.ByteString deriving Show
 data MailAddress = MailAddress BS.ByteString deriving Show
@@ -39,85 +28,67 @@ data MkAccErr = UserNameAlreadyExist | MailAddressAlreadyExist deriving Show
 data DeriveError = NoAccount | NotActivated deriving Show
 
 open :: IO Connection
-open = do
-	conn <- DB.open
-	ep <- createEntropyPool
-	cc <- newIORef $ cprgCreate ep
-	sna <- DB.mkAccount conn
-	ra <- DB.rmAccount conn
-	cn <- DB.checkName conn
-	ca <- DB.checkAddress conn
-	sh <- DB.saltHash conn
-	sa <- DB.setActivate conn
-	ma <- DB.getMailAddress conn
-	return Connection {
-		connection = conn,
-		connCprg = cc,
-		stmtNewAccount = sna,
-		stmtRemoveAccount = ra,
-		stmtCheckName = cn,
-		stmtCheckAddress = ca,
-		stmtGetSaltHash = sh,
-		stmtSetActive = sa,
-		stmtMailAddress = ma
-		}
+open = Connection <$> (newIORef . cprgCreate =<< createEntropyPool)
 
-close :: Connection -> IO ()
-close conn = do
-	DB.finalizeStmt $ stmtNewAccount conn
-	DB.finalizeStmt $ stmtRemoveAccount conn
-	DB.finalizeStmt $ stmtCheckName conn
-	DB.finalizeStmt $ stmtCheckAddress conn
-	DB.finalizeStmt $ stmtGetSaltHash conn
-	DB.finalizeStmt $ stmtSetActive conn
-	DB.finalizeStmt $ stmtMailAddress conn
-	DB.close $ connection conn
+stmtMkAccount :: String
+stmtMkAccount = "INSERT INTO account (" ++
+	"name, salt, hash, mail_address, act_key, activated) VALUES (" ++
+	":name, :salt, :hash, :mail_address, :act_key, 0)"
 
 newAccount :: Connection ->
 	UserName -> MailAddress -> Password -> IO (Either MkAccErr UUID4)
 newAccount conn un@(UserName nm) ma@(MailAddress addr) psw = do
-	ne <- checkName conn un
-	ae <- checkAddress conn ma
+	ne <- checkName un
+	ae <- checkAddress ma
 	case (ne, ae) of
 		(True, _) -> return $ Left UserNameAlreadyExist
 		(_, True) -> return $ Left MailAddressAlreadyExist
 		_ -> do
-			u@(UUID4 uu) <- uuid4IO $ connCprg conn
-			DB.bindStmt stmt "name" nm
-			DB.bindStmt stmt "mail_address" addr
-			DB.bindStmt stmt "act_key" . BSC.pack $ show u -- uu
-			(slt, hs) <- createHash psw
-			setSalt stmt slt
-			setHash stmt hs
-			DB.runStmt stmt
+			u <- uuid4IO $ connCprg conn
+			(Salt slt, Hash hs) <- createHash psw
+
+			_ <- withSQLite "accounts.sqlite3" $ \db ->
+				withPrepared db stmtMkAccount $ \sm -> do
+					bind sm ":name" $ BSC.unpack nm
+					bind sm ":mail_address" $ BSC.unpack addr
+					bind sm ":act_key" $ show u
+					bind sm ":salt" $ BSC.unpack slt
+					bind sm ":hash" hs
+					step sm
 			return $ Right u
-	where stmt = stmtNewAccount conn 
 
-checkName :: Connection -> UserName -> IO Bool
-checkName conn (UserName nm) = do
-	DB.bindStmt stmt "name" nm
-	DB.existStmt stmt
-	where stmt = stmtCheckName conn 
+qCheckName :: String
+qCheckName = "SELECT name FROM account WHERE name = :name"
 
-checkAddress :: Connection -> MailAddress -> IO Bool
-checkAddress conn (MailAddress ma) = do
-	DB.bindStmt stmt "mail_address" ma
-	DB.existStmt stmt
-	where stmt = stmtCheckAddress conn 
+checkName :: UserName -> IO Bool
+checkName (UserName nm) = withSQLite "accounts.sqlite3" $ \db -> do
+	(r, _) <- withPrepared db qCheckName $ \sm -> do
+		bind sm ":name" $ BSC.unpack nm
+		step sm
+	return $ case r of
+		Row -> True
+		_ -> False
 
-rmAccount :: Connection -> UserName -> IO ()
-rmAccount conn (UserName nm) = do
-	let stmt = stmtRemoveAccount conn
-	DB.bindStmt stmt "name" nm
-	DB.runStmt stmt
+qCheckAddress :: String
+qCheckAddress =
+	"SELECT mail_address FROM account WHERE mail_address = :mail_address"
 
-activate :: Connection -> UUID4 -> IO ()
-activate conn u = do
+checkAddress :: MailAddress -> IO Bool
+checkAddress (MailAddress ma) = withSQLite "accounts.sqlite3" $ \db -> do
+	(r, _) <- withPrepared db qCheckAddress $ \sm -> do
+		bind sm ":mail_address" $ BSC.unpack ma
+		step sm
+	return $ case r of
+		Row -> True
+		_ -> False
+
+activate :: UUID4 -> IO ()
+activate u = do
 	_ <- withSQLite "accounts.sqlite3" $ \db ->
 		withPrepared db qSetActivate $ \sm -> do
 			bind sm ":act_key" $ show u
 			step sm
-	print u
+	return ()
 
 qSetActivate :: String
 qSetActivate = "UPDATE account SET activated = 1 where act_key = :act_key"
@@ -129,19 +100,38 @@ chkLogin :: UserName -> Password -> IO Bool
 chkLogin (UserName n) pw = (fst <$>) . withSQLite "accounts.sqlite3" $ \db ->
 	withPrepared db qSaltHash $ \sm -> do
 		bind sm ":name" (BSC.unpack n)
-		_ <- step sm
-		chkHash pw <$> (Salt <$> column sm 0) <*> (Hash <$> column sm 1)
+		r <- step sm
+		case r of
+			Row -> chkHash pw
+				<$> (Salt <$> column sm 0)
+				<*> (Hash <$> column sm 1)
+			_ -> return False
 
-mailAddress :: Connection -> UserName -> IO (Maybe MailAddress)
+qGetMailAddress :: String
+qGetMailAddress = "SELECT mail_address FROM account WHERE name = :name"
+
+mailAddress :: UserName -> IO (Maybe MailAddress)
 	-- (Either DeriveError MailAddress)
-mailAddress conn (UserName nm) = do
-	let stmt = stmtMailAddress conn
-	DB.bindStmt stmt "name" nm
-	(MailAddress <$>) <$> DB.getStmt stmt
+mailAddress (UserName nm) = withSQLite "accounts.sqlite3" $ \db ->
+	(fst <$>) . withPrepared db qGetMailAddress $ \sm -> do
+		bind sm ":name" (BSC.unpack nm)
+		r <- step sm
+		case r of
+			Row -> Just . MailAddress . BSC.pack <$> column sm 0
+			_ -> return Nothing
+
+qInsertRequest :: String
+qInsertRequest =
+	"INSERT INTO request(req_id, requester, req_description) " ++
+		"VALUES(:req_id, :requester, :req_description)"
 
 insertRequest :: Connection -> UserName -> BS.ByteString -> IO ()
 insertRequest conn (UserName nm) r = do
 	uu <- uuid4IO $ connCprg conn
-	DB.insertRequest (connection conn)
-		(BSC.pack $ show uu)
-		nm r
+	withSQLite "accounts.sqlite3" $ \db -> do
+		_ <- withPrepared db qInsertRequest $ \sm -> do
+			bind sm ":req_id" $ show uu
+			bind sm ":requester" $ BSC.unpack nm
+			bind sm ":req_description" $ BSC.unpack r
+			step sm
+		return ()
