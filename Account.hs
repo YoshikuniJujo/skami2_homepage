@@ -5,7 +5,7 @@ module Account (
 	UserName(..), MailAddress(..), Password(..), MkAccErr(..),
 	open, newAccount, activate, chkLogin, mailAddress,
 
-	insertRequest,
+	insertRequest, getRequests
 	) where
 
 import Control.Applicative
@@ -135,3 +135,23 @@ insertRequest conn (UserName nm) r = do
 			bind sm ":req_description" $ BSC.unpack r
 			step sm
 		return ()
+
+qGetRequests :: String
+qGetRequests = "SELECT * FROM request"
+
+getRequests :: IO [BS.ByteString]
+getRequests = (map BSC.pack <$>) . withSQLite "accounts.sqlite3" $ \db ->
+	(fst <$>) . withPrepared db qGetRequests $ \sm -> doWhile $ do
+		r <- step sm
+		case r of
+			Row -> (Just . unwords <$>) $ (\x y z -> [x, y, z])
+				<$> column sm 0
+				<*> column sm 1
+				<*> column sm 2
+			_ -> return Nothing
+		
+
+doWhile :: IO (Maybe a) -> IO [a]
+doWhile act = do
+	r <- act
+	case r of Just x -> (x :) <$> doWhile act; _ -> return []

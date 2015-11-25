@@ -295,15 +295,29 @@ logoutCookie = SetCookie {
 	}
 
 setUName :: User -> BS.ByteString -> IO BS.ByteString
-setUName (User un) t = do
+setUName u@(User un) t = do
 	ma <- Acc.mailAddress (Acc.UserName un)
-	fromJust <$> template
+	fromJust <$> template (homeLookup u ma) homeValues t
+	{-
 		(\s -> maybeToList $ lookup s [
 			("user_name", un),
 			("mail_address", maybe "no address"
-				(\(Acc.MailAddress a) -> a) ma)])
+				(\(Acc.MailAddress a) -> a) ma),
+			("line", "hello")])
 --		(\s -> case s of "user_name" -> [un]; _ -> [""])
 		(const $ return [""]) t
+		-}
+
+homeLookup :: User -> Maybe Acc.MailAddress -> BS.ByteString -> [BS.ByteString]
+homeLookup (User un) _ "user_name" = [un]
+homeLookup _ (Just (Acc.MailAddress ma)) "mail_address" = [ma]
+homeLookup _ _ "mail_address" = ["no address"]
+homeLookup _ _ "line" = ["hello", "world"]
+homeLookup _ _ _ = []
+
+homeValues :: BS.ByteString -> IO [BS.ByteString]
+homeValues "LINE" = Acc.getRequests
+homeValues _ = return []
 
 showFile :: PeyotlsHandle -> ContentType -> FilePath -> PeyotlsM ()
 showFile t ct fp = showPage t ct =<< liftIO (BS.readFile fp)
