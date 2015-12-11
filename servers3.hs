@@ -101,7 +101,13 @@ resp r ut t rg = do
 		Just (Static ct pg) -> showFile t ct pg
 		Just (Dynamic f) -> f t conn mu pr s
 		_	| "/requests/" `BS.isPrefixOf` (\(Path p) -> p) pt ->
-				showFile t html "static/requests/template.html"
+				(showPage t html =<<) . io $ do
+					t <- BS.readFile
+						"static/requests/template.html"
+					fromJust <$> template (const [])
+						(reqValues $ BS.drop 10 $
+							(\(Path p) -> p) pt)
+						t
 			| otherwise -> do
 				io . putStrLn $ "badbadbad:" ++ show pt
 				putResponse t (response' $
@@ -110,7 +116,11 @@ resp r ut t rg = do
 					responseContentType = text,
 					responseOthers = hsts }
 
-
+reqValues :: BS.ByteString -> BS.ByteString -> IO [BS.ByteString]
+reqValues i "DESC" = do
+	print i
+	(: []) . fromJust <$> Acc.getReqDescription i
+reqValues _ _ = return []
 
 response' :: LBS.ByteString -> Response Pipe PeyotlsHandle
 response' = response

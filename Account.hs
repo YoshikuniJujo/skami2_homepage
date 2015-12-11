@@ -154,12 +154,14 @@ qGetReqDescription :: String
 qGetReqDescription =
 	"SELECT req_description FROM request WHERE req_id = :req_id"
 
-getReqDescription :: BS.ByteString -> IO BS.ByteString
+getReqDescription :: BS.ByteString -> IO (Maybe BS.ByteString)
 getReqDescription i = withSQLite "sqlite3/accounts.sqlite3" $ \db ->
 	(fst <$>) . withPrepared db qGetReqDescription $ \sm ->  do
-		bind sm ":req_id" i
-		_ <- step sm
-		column sm 0
+		bind sm ":req_id" $ BSC.unpack i
+		r <- step sm
+		case r of
+			Row -> Just <$> column sm 0
+			_ -> return Nothing
 		
 tuple3 :: (a -> b) -> (a, a, a) -> (b, b, b)
 tuple3 f (x, y, z) = (f x, f y, f z)
