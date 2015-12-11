@@ -139,17 +139,19 @@ insertRequest conn (UserName nm) r = do
 qGetRequests :: String
 qGetRequests = "SELECT * FROM request"
 
-getRequests :: IO [BS.ByteString]
-getRequests = (map BSC.pack <$>) . withSQLite "sqlite3/accounts.sqlite3" $ \db ->
+getRequests :: IO [(BS.ByteString, BS.ByteString, BS.ByteString)]
+getRequests = (map (tuple3 BSC.pack) <$>) . withSQLite "sqlite3/accounts.sqlite3" $ \db ->
 	(fst <$>) . withPrepared db qGetRequests $ \sm -> doWhile $ do
 		r <- step sm
 		case r of
-			Row -> (Just . unwords <$>) $ (\x y z -> [x, y, z])
+			Row -> (Just <$>) $ (\x y z -> (x, y, z))
 				<$> column sm 0
 				<*> column sm 1
 				<*> column sm 2
 			_ -> return Nothing
 		
+tuple3 :: (a -> b) -> (a, a, a) -> (b, b, b)
+tuple3 f (x, y, z) = (f x, f y, f z)
 
 doWhile :: IO (Maybe a) -> IO [a]
 doWhile act = do

@@ -102,11 +102,17 @@ resp r ut t rg = do
 	case mh of
 		Just (Static ct pg) -> showFile t ct pg
 		Just (Dynamic f) -> f t conn mu pr s
-		_ -> do	io . putStrLn $ "badbadbad:" ++ show pt
-			putResponse t (response' $ LBS.fromChunks ["404 File not found"]) {
-				responseStatusCode = NotFound,
-				responseContentType = text,
-				responseOthers = hsts }
+		_	| "/requests/" `BS.isPrefixOf` (\(Path p) -> p) pt ->
+				showFile t html "static/requests/template.html"
+			| otherwise -> do
+				io . putStrLn $ "badbadbad:" ++ show pt
+				putResponse t (response' $
+					LBS.fromChunks ["404 File not found"]) {
+					responseStatusCode = NotFound,
+					responseContentType = text,
+					responseOthers = hsts }
+
+
 
 response' :: LBS.ByteString -> Response Pipe PeyotlsHandle
 response' = response
@@ -303,15 +309,6 @@ setUName :: User -> BS.ByteString -> IO BS.ByteString
 setUName u@(User un) t = do
 	ma <- Acc.mailAddress (Acc.UserName un)
 	fromJust <$> template (homeLookup u ma) homeValues t
-	{-
-		(\s -> maybeToList $ lookup s [
-			("user_name", un),
-			("mail_address", maybe "no address"
-				(\(Acc.MailAddress a) -> a) ma),
-			("line", "hello")])
---		(\s -> case s of "user_name" -> [un]; _ -> [""])
-		(const $ return [""]) t
-		-}
 
 homeLookup :: User -> Maybe Acc.MailAddress -> BS.ByteString -> [BS.ByteString]
 homeLookup (User un) _ "user_name" = [un]
@@ -321,7 +318,8 @@ homeLookup _ _ "line" = ["hello", "world"]
 homeLookup _ _ _ = []
 
 homeValues :: BS.ByteString -> IO [BS.ByteString]
-homeValues "LINE" = Acc.getRequests
+homeValues "LINE" = (<$> Acc.getRequests) . map $ \(x, y, z) ->
+	BSC.unwords [BS.concat ["<a href=\"/requests/", x, "\">", x, "</a>"], y, z]
 homeValues _ = return []
 
 showFile :: PeyotlsHandle -> ContentType -> FilePath -> PeyotlsM ()
