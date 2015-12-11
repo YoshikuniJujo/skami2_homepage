@@ -47,7 +47,7 @@ newAccount conn un@(UserName nm) ma@(MailAddress addr) psw = do
 			u <- uuid4IO $ connCprg conn
 			(Salt slt, Hash hs) <- createHash psw
 
-			_ <- withSQLite "accounts.sqlite3" $ \db ->
+			_ <- withSQLite "sqlite3/accounts.sqlite3" $ \db ->
 				withPrepared db stmtMkAccount $ \sm -> do
 					bind sm ":name" $ BSC.unpack nm
 					bind sm ":mail_address" $ BSC.unpack addr
@@ -61,7 +61,7 @@ qCheckName :: String
 qCheckName = "SELECT name FROM account WHERE name = :name"
 
 checkName :: UserName -> IO Bool
-checkName (UserName nm) = withSQLite "accounts.sqlite3" $ \db -> do
+checkName (UserName nm) = withSQLite "sqlite3/accounts.sqlite3" $ \db -> do
 	(r, _) <- withPrepared db qCheckName $ \sm -> do
 		bind sm ":name" $ BSC.unpack nm
 		step sm
@@ -74,7 +74,7 @@ qCheckAddress =
 	"SELECT mail_address FROM account WHERE mail_address = :mail_address"
 
 checkAddress :: MailAddress -> IO Bool
-checkAddress (MailAddress ma) = withSQLite "accounts.sqlite3" $ \db -> do
+checkAddress (MailAddress ma) = withSQLite "sqlite3/accounts.sqlite3" $ \db -> do
 	(r, _) <- withPrepared db qCheckAddress $ \sm -> do
 		bind sm ":mail_address" $ BSC.unpack ma
 		step sm
@@ -84,7 +84,7 @@ checkAddress (MailAddress ma) = withSQLite "accounts.sqlite3" $ \db -> do
 
 activate :: UUID4 -> IO ()
 activate u = do
-	_ <- withSQLite "accounts.sqlite3" $ \db ->
+	_ <- withSQLite "sqlite3/accounts.sqlite3" $ \db ->
 		withPrepared db qSetActivate $ \sm -> do
 			bind sm ":act_key" $ show u
 			step sm
@@ -97,7 +97,7 @@ qSaltHash :: String
 qSaltHash = "SELECT salt, hash FROM account WHERE name = :name AND activated = 1"
 
 chkLogin :: UserName -> Password -> IO Bool
-chkLogin (UserName n) pw = (fst <$>) . withSQLite "accounts.sqlite3" $ \db ->
+chkLogin (UserName n) pw = (fst <$>) . withSQLite "sqlite3/accounts.sqlite3" $ \db ->
 	withPrepared db qSaltHash $ \sm -> do
 		bind sm ":name" (BSC.unpack n)
 		r <- step sm
@@ -112,7 +112,7 @@ qGetMailAddress = "SELECT mail_address FROM account WHERE name = :name"
 
 mailAddress :: UserName -> IO (Maybe MailAddress)
 	-- (Either DeriveError MailAddress)
-mailAddress (UserName nm) = withSQLite "accounts.sqlite3" $ \db ->
+mailAddress (UserName nm) = withSQLite "sqlite3/accounts.sqlite3" $ \db ->
 	(fst <$>) . withPrepared db qGetMailAddress $ \sm -> do
 		bind sm ":name" (BSC.unpack nm)
 		r <- step sm
@@ -128,7 +128,7 @@ qInsertRequest =
 insertRequest :: Connection -> UserName -> BS.ByteString -> IO ()
 insertRequest conn (UserName nm) r = do
 	uu <- uuid4IO $ connCprg conn
-	withSQLite "accounts.sqlite3" $ \db -> do
+	withSQLite "sqlite3/accounts.sqlite3" $ \db -> do
 		_ <- withPrepared db qInsertRequest $ \sm -> do
 			bind sm ":req_id" $ show uu
 			bind sm ":requester" $ BSC.unpack nm
@@ -140,7 +140,7 @@ qGetRequests :: String
 qGetRequests = "SELECT * FROM request"
 
 getRequests :: IO [BS.ByteString]
-getRequests = (map BSC.pack <$>) . withSQLite "accounts.sqlite3" $ \db ->
+getRequests = (map BSC.pack <$>) . withSQLite "sqlite3/accounts.sqlite3" $ \db ->
 	(fst <$>) . withPrepared db qGetRequests $ \sm -> doWhile $ do
 		r <- step sm
 		case r of

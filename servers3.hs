@@ -34,6 +34,7 @@ import qualified Data.ByteString.Lazy as LBS
 import UUID4 (UUID4, newGen, uuid4IO)
 import MakeHash
 import MailTo
+import UserGroup
 
 import qualified Account as Acc
 
@@ -63,6 +64,8 @@ main = do
 		<*> newIORef []
 		<*> (newIORef =<< newGen)
 	soc <- listenOn $ PortNumber 443
+	setGroup "hummingbird"
+	setUser "hummingbird"
 	void . (`runStateT` g0) . forever $ do
 		(h, _, _) <- io $ accept soc
 		g <- StateT $ return . cprgFork
@@ -141,7 +144,9 @@ index :: PeyotlsHandle ->
 index t conn (Just u@(User un)) ps _ = do
 	io . putStrLn $ "index: " ++ show ps
 	io $ case lookup "request" ps of
-		Just r -> Acc.insertRequest conn (Acc.UserName un) r
+		Just r -> do
+			writeFile "static/requests/test.txt" "hello"
+			Acc.insertRequest conn (Acc.UserName un) r
 		_ -> return ()
 	showPage t html =<< io . setUName u =<<
 		io (BS.readFile "static/i_know.html")
