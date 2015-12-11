@@ -10,7 +10,22 @@
 
 <h1>HummingBird</h1>
 
+<h2>依頼内容</h2>
+
 <p>@{DESC}</p>
+
+<h2>画像のアップロード</h2>
+
+<p>ここに画像のアップロード用のフォームを置く。</p>
+
+<form method="POST" action="/requests" enctype="multipart/form-data">
+<input type="file" name="uploader" size="30">
+<input type="submit" value="送信">
+</form>
+
+<h2>画像</h2>
+
+<p>ここに画像へのリンクのリストを置く。</p>
 
 </body>
 
