@@ -1,6 +1,7 @@
-{-# LANGUAGE OverloadedStrings, PackageImports #-}
+{-# LANGUAGE OverloadedStrings, PackageImports, TupleSections #-}
 
 import Control.Applicative ((<$>), (<*>))
+import Control.Arrow (first, second)
 import "monads-tf" Control.Monad.State (
 	MonadIO, liftIO, forever, void, StateT(..), runStateT )
 import Control.Concurrent (forkIO)
@@ -12,7 +13,7 @@ import Data.Pipe (Pipe, runPipe, (=$=))
 import Data.Pipe.List (toList)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.Time (getZonedTime)
-import System.IO (Handle)
+import System.IO (Handle, openBinaryFile, IOMode(..))
 import Network (PortID(..), listenOn, accept)
 import Network.PeyoTLS.Server (
 	CipherSuite, PeyotlsM, PeyotlsHandle, TlsHandle, run, open)
@@ -21,7 +22,7 @@ import Network.TigHTTP.Server (getRequest, putResponse, response, requestBody)
 import Network.TigHTTP.Types (
 	Request(..), Path(..), Get(..), Post(..),
 	Response(..), ContentType(..), Type(..), Subtype(..), SetCookie(..),
-	StatusCode(..) )
+	StatusCode(..), Parameter(..) )
 import "crypto-random" Crypto.Random (
 	SystemRNG, createEntropyPool, cprgCreate, cprgFork )
 import Text.Template (template)
@@ -82,9 +83,19 @@ path (RequestGet p@(Path b) _ _) = case span (/= '?') $ unp b of
 path (RequestPost p _ _) = (p, Nothing)
 path (RequestRaw _ p _ _) = (p, Nothing)
 
+getContentType :: Request h -> Maybe ContentType
+getContentType (RequestPost _ _ p) = postContentType p
+getContentType _ = Nothing
+
 resp :: Request PeyotlsHandle -> UTable -> PeyotlsHandle -> RndGen -> PeyotlsM ()
 resp r ut t rg = do
-	pr_ <- getPairs $ requestBody r
+	liftIO . print $ getContentType r
+	(pr_, mimg) <- case getContentType r of
+		Just (ContentType (TypeRaw "multipart") (SubtypeRaw "form-data") [
+			ParameterRaw "boundary" bnd ]) -> do
+				cnt <- getBodyContents $ requestBody r
+				return ([], Just $ getUploaded bnd cnt)
+		_ -> (, Nothing) <$> getPairs (requestBody r)
 	let	(pt, mpr) = path r
 		pr = fromMaybe pr_ mpr
 		c = case r of
@@ -93,6 +104,7 @@ resp r ut t rg = do
 			_ -> []
 		s = (ut, rg)
 		mh = lookup (not $ null pr, pt) pages
+	liftIO $ print mimg
 	liftIO $ print pr
 	liftIO $ print c
 	mu <- (User <$>) <$> io (getUser ut $ getUUID4 c)
@@ -108,6 +120,13 @@ resp r ut t rg = do
 						(reqValues $ BS.drop 10 $
 							(\(Path p) -> p) pt)
 						t
+			| pt == Path "/requests" -> do
+				png <- ("static/images/" ++) . (++ ".png")
+					. show <$> io (uuid4IO rg)
+				io $ print png
+				io $ do	h <- openBinaryFile png WriteMode
+					BS.hPut h $ maybe "" snd mimg
+				showFile t html "static/requests/hello.html"
 			| otherwise -> do
 				io . putStrLn $ "badbadbad:" ++ show pt
 				putResponse t (response' $
@@ -115,6 +134,48 @@ resp r ut t rg = do
 					responseStatusCode = NotFound,
 					responseContentType = text,
 					responseOthers = hsts }
+
+getUploaded :: BS.ByteString -> BS.ByteString ->
+	([(BS.ByteString, (BS.ByteString, [(BS.ByteString, BS.ByteString)]))],
+		BS.ByteString)
+getUploaded b cnt =
+	first (map $ second (withAttributes . BSC.dropWhile isSpace . BSC.tail) . BSC.break (== ':'))
+		. spanEmptyLine $ fromMultipart ("--" `BS.append` b) cnt
+
+spanEmptyLine :: BS.ByteString -> ([BS.ByteString], BS.ByteString)
+spanEmptyLine bs = case popLine bs of
+	("", r) -> ([], r)
+	(l, r) -> (l :) `first` spanEmptyLine r
+
+withAttributes :: BS.ByteString -> (BS.ByteString, [(BS.ByteString, BS.ByteString)])
+withAttributes bs = attributes `second` BSC.break (== ';') bs
+
+attributes :: BS.ByteString -> [(BS.ByteString, BS.ByteString)]
+attributes bs
+	| BS.null bs = []
+	| otherwise = let (p, bs') = BSC.break (== ';') $ BSC.tail bs in
+		(BSC.takeWhile (/= '"') . BSC.tail . BSC.dropWhile (/= '"'))
+				`second`
+				BSC.break (== '=') (BSC.dropWhile isSpace p)
+			: attributes bs'
+
+popLine :: BS.ByteString -> (BS.ByteString, BS.ByteString)
+popLine bs = BSC.drop 2 `second` BSC.break (== '\r') bs
+
+fromMultipart :: BS.ByteString -> BS.ByteString -> BS.ByteString
+fromMultipart b cnt
+	| BS.isPrefixOf (b `BS.append` "\r\n") cnt =
+		takeMultipart ("\r\n" `BS.append` b `BS.append` "--") $
+			BS.drop (BS.length b + 2) cnt
+	| otherwise = fromMultipart b $ BS.tail cnt
+
+takeMultipart :: BS.ByteString -> BS.ByteString -> BS.ByteString
+takeMultipart b cnt
+	| BS.isPrefixOf (b `BS.append` "\r\n") cnt = BS.empty
+	| otherwise = BS.cons (BS.head cnt) $ takeMultipart b (BS.tail cnt)
+
+getBodyContents :: Body -> PeyotlsM BS.ByteString
+getBodyContents b = maybe "" BS.concat <$> runPipe (b =$= toList)
 
 reqValues :: BS.ByteString -> BS.ByteString -> IO [BS.ByteString]
 reqValues i "DESC" = do
