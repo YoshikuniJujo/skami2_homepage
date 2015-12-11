@@ -5,7 +5,7 @@ import "monads-tf" Control.Monad.State (
 	MonadIO, liftIO, forever, void, StateT(..), runStateT )
 import Control.Concurrent (forkIO)
 import Data.Bool (bool)
-import Data.Maybe (fromMaybe, fromJust, maybeToList, listToMaybe)
+import Data.Maybe (fromMaybe, fromJust, listToMaybe)
 import Data.Char (isSpace)
 import Data.HandleLike (hlClose, HandleMonad)
 import Data.Pipe (Pipe, runPipe, (=$=))
@@ -29,7 +29,6 @@ import Text.Template (template)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ByteString.Lazy as LBS
--- import qualified Data.Text as T
 
 import UUID4 (UUID4, newGen, uuid4IO)
 import MakeHash
@@ -40,7 +39,6 @@ import qualified Account as Acc
 
 type Body = Pipe () BS.ByteString (HandleMonad PeyotlsHandle) ()
 type Pairs = [(BS.ByteString, BS.ByteString)]
--- type Cookie = [(BS.ByteString, BS.ByteString)]
 type RndGen = IORef SystemRNG
 type UTable = IORef [(UUID4, BS.ByteString)]
 type St = (UTable, RndGen)
@@ -166,7 +164,6 @@ login t _ _ np (ut, g) = do
 	let Just (n, p) =
 		(,) <$> lookup "user_name" np <*> lookup "user_password" np
 	mu <- io $ bool (return Nothing) (Just <$> addUser ut (uuid4IO g) n)
---		=<< checkHash n p
 		=<< Acc.chkLogin (Acc.UserName n) (Acc.Password p)
 	liftIO $ print mu
 	flip (maybe $ showFile t html "static/index.html") mu $ \u -> do
@@ -181,15 +178,8 @@ logout = Dynamic $ \t _ _ _ _ -> do
 activate :: Page
 activate = Dynamic $ \t _ _ up _ -> do
 	let Just ak = lookup "activation_key" up
-	liftIO $ getActi ak >>= doActivate . (unp <$>)
 	liftIO $ Acc.activate (read $ unp ak)
 	showFile t html "static/activated.html"
-
-getActi :: BS.ByteString -> IO (Maybe BS.ByteString)
-getActi s = do
-	c <- BS.readFile "actidict.txt"
-	let d = map ((\[k, v] -> (k, v)) . BSC.words) $ BSC.lines c
-	return $ lookup s d
 
 doActivate :: Maybe FilePath -> IO ()
 doActivate (Just fp) = do
@@ -225,45 +215,8 @@ signup = Dynamic $ \t conn _ up (_ut, _rg) -> do
 				Right uuid -> do
 					showFile t html "static/signup_done.html"
 					liftIO $ do
-					--	uuid <- uuid4IO rg
 						print uuid
-						addActivate un uuid
 						mailTo ma uuid
-
-addActivate :: BS.ByteString -> UUID4 -> IO ()
-addActivate ac ui = do
-	c <- readFile "actidict.txt"
-	print c
-	writeFile "actidict.txt" $ c ++ show ui ++ " " ++ unp ac ++ "\n"
-
-{-
-printP :: MonadIO m => Pipe BSC.ByteString () m ()
-printP = await >>= maybe (return ()) (\s -> liftIO (BSC.putStr s) >> printP)
-
-passwordTable :: IO [(BS.ByteString, BS.ByteString, BS.ByteString)]
-passwordTable = map
-		((\[u, s, p] -> (u, s, p)) . map BSC.pack . words)
-	. lines <$> readFile "password.txt"
-
-getSalt, getPw :: BS.ByteString ->
-	[(BS.ByteString, BS.ByteString, BS.ByteString)] -> Maybe BS.ByteString
-getSalt _ [] = Nothing
-getSalt u0 ((u, s, _) : uss)
-	| u == u0 = Just s
-	| otherwise = getSalt u0 uss
-
-getPw _ [] = Nothing
-getPw u0 ((u, _, p) : uss)
-	| u == u0 = Just p
-	| otherwise = getPw u0 uss
-
-split :: Eq a => a -> [a] -> [[a]]
-split _ [] = [[]]
-split s (x : xs)
-	| x == s = [] : split s xs
-	| otherwise = (x :) `heading` split s xs
-	where heading f (y : ys) = f y : ys; heading _ _ = error "bad"
-	-}
 
 addUser :: UTable -> IO UUID4 -> BS.ByteString -> IO UUID4
 addUser ut gt nm = do

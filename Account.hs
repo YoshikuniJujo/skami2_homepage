@@ -5,7 +5,7 @@ module Account (
 	UserName(..), MailAddress(..), Password(..), MkAccErr(..),
 	open, newAccount, activate, chkLogin, mailAddress,
 
-	insertRequest, getRequests
+	insertRequest, getRequests, getReqDescription,
 	) where
 
 import Control.Applicative
@@ -149,6 +149,17 @@ getRequests = (map (tuple3 BSC.pack) <$>) . withSQLite "sqlite3/accounts.sqlite3
 				<*> column sm 1
 				<*> column sm 2
 			_ -> return Nothing
+
+qGetReqDescription :: String
+qGetReqDescription =
+	"SELECT req_description FROM request WHERE req_id = :req_id"
+
+getReqDescription :: BS.ByteString -> IO BS.ByteString
+getReqDescription i = withSQLite "sqlite3/accounts.sqlite3" $ \db ->
+	(fst <$>) . withPrepared db qGetReqDescription $ \sm ->  do
+		bind sm ":req_id" i
+		_ <- step sm
+		column sm 0
 		
 tuple3 :: (a -> b) -> (a, a, a) -> (b, b, b)
 tuple3 f (x, y, z) = (f x, f y, f z)
