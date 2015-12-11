@@ -6,6 +6,8 @@ module Account (
 	open, newAccount, activate, chkLogin, mailAddress,
 
 	insertRequest, getRequests, getReqDescription,
+
+	insertImage, getImages,
 	) where
 
 import Control.Applicative
@@ -170,3 +172,28 @@ doWhile :: IO (Maybe a) -> IO [a]
 doWhile act = do
 	r <- act
 	case r of Just x -> (x :) <$> doWhile act; _ -> return []
+
+qInsertImage :: String
+qInsertImage =
+	"INSERT INTO images(img_id, img_request) VALUES(:img_id, :img_request)"
+
+insertImage :: BS.ByteString -> BS.ByteString -> IO ()
+insertImage i r = withSQLite "sqlite3/accounts.sqlite3" $ \db -> do
+	_ <- withPrepared db qInsertImage $ \sm -> do
+		bind sm ":img_id" $ BSC.unpack i
+		bind sm ":img_request" $ BSC.unpack r
+		step sm
+	return ()
+
+qGetImages :: String
+qGetImages = "SELECT * FROM images WHERE img_request = :img_request"
+
+getImages :: BS.ByteString -> IO [BS.ByteString]
+getImages req = (map BSC.pack <$>) . withSQLite "sqlite3/accounts.sqlite3" $ \db ->
+	(fst <$>) . withPrepared db qGetImages $ \sm -> do
+		bind sm ":img_request" $ BSC.unpack req
+		doWhile $ do
+			r <- step sm
+			case r of
+				Row -> Just <$> column sm 0
+				_ -> return Nothing

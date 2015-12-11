@@ -116,16 +116,26 @@ resp r ut t rg = do
 				(showPage t html =<<) . io $ do
 					t <- BS.readFile
 						"static/requests/template.html"
-					fromJust <$> template (const [])
+					let Path p = pt
+					fromJust <$> template
+						(reqLookup p)
 						(reqValues $ BS.drop 10 $
 							(\(Path p) -> p) pt)
 						t
+			| "/images/" `BS.isPrefixOf` (\(Path p) -> p) pt -> do
+				let Path p = pt
+				showFile t png . ("static/" ++) $ BSC.unpack p
 			| pt == Path "/requests" -> do
-				png <- ("static/images/" ++) . (++ ".png")
-					. show <$> io (uuid4IO rg)
-				io $ print png
-				io $ do	h <- openBinaryFile png WriteMode
+				u <- io $ uuid4IO rg
+				let pg = "static/images/" ++ show u ++ ".png"
+				io $ print pg
+				let mreq = lookup "name" =<<
+					snd . snd . head . fst <$> mimg
+				io $ print mreq
+				io $ do	h <- openBinaryFile pg WriteMode
 					BS.hPut h $ maybe "" snd mimg
+				io $ maybe (return ())
+					(Acc.insertImage . BSC.pack $ show u) mreq
 				showFile t html "static/requests/hello.html"
 			| otherwise -> do
 				io . putStrLn $ "badbadbad:" ++ show pt
@@ -177,10 +187,15 @@ takeMultipart b cnt
 getBodyContents :: Body -> PeyotlsM BS.ByteString
 getBodyContents b = maybe "" BS.concat <$> runPipe (b =$= toList)
 
+reqLookup :: BS.ByteString -> BS.ByteString -> [BS.ByteString]
+reqLookup i "REQ_ID" = [BS.drop 10 i]
+reqLookup _ _ = []
+
 reqValues :: BS.ByteString -> BS.ByteString -> IO [BS.ByteString]
 reqValues i "DESC" = do
 	print i
 	(: []) . fromJust <$> Acc.getReqDescription i
+reqValues i "IMAGE_ID" = map (`BS.append` ".png") <$> Acc.getImages i
 reqValues _ _ = return []
 
 response' :: LBS.ByteString -> Response Pipe PeyotlsHandle
@@ -200,10 +215,11 @@ pages = [
 	((False, Path "/robots.txt"), Static text "static/robots.txt"),
 	((False, Path "/favicon.ico"), Static ico "static/favicon.ico") ]
 
-html, text, ico :: ContentType
+html, text, ico, png :: ContentType
 html = ContentType Text Html []
 text = ContentType Text Plain []
 ico = ContentType (TypeRaw "image") (SubtypeRaw "vnd.microsoft.icon") []
+png = ContentType (TypeRaw "image") (SubtypeRaw "png") []
 
 data Page
 	= Static { contentType :: ContentType, static :: FilePath }

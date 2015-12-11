@@ -19,13 +19,19 @@
 <p>ここに画像のアップロード用のフォームを置く。</p>
 
 <form method="POST" action="/requests" enctype="multipart/form-data">
-<input type="file" name="uploader" size="30">
+<input type="file" name="${REQ_ID}" size="30">
 <input type="submit" value="送信">
 </form>
 
 <h2>画像</h2>
 
 <p>ここに画像へのリンクのリストを置く。</p>
+
+\[
+
+<p><a href="/images/@{IMAGE_ID}">@{IMAGE_ID}</a></p>
+
+\]
 
 </body>
 
