@@ -35,6 +35,7 @@ import UUID4 (UUID4, newGen, uuid4IO)
 import MakeHash
 import MailTo
 import UserGroup
+import URLEncode
 
 import qualified Account as Acc
 
@@ -194,7 +195,7 @@ reqLookup _ _ = []
 reqValues :: BS.ByteString -> BS.ByteString -> IO [BS.ByteString]
 reqValues i "DESC" = do
 	print i
-	(: []) . fromJust <$> Acc.getReqDescription i
+	(: []) . decode . fromJust <$> Acc.getReqDescription i
 reqValues i "IMAGE_ID" = map (`BS.append` ".png") <$> Acc.getImages i
 reqValues _ _ = return []
 
@@ -235,9 +236,7 @@ index :: PeyotlsHandle ->
 index t conn (Just u@(User un)) ps _ = do
 	io . putStrLn $ "index: " ++ show ps
 	io $ case lookup "request" ps of
-		Just r -> do
-			writeFile "static/requests/test.txt" "hello"
-			Acc.insertRequest conn (Acc.UserName un) r
+		Just r -> Acc.insertRequest conn (Acc.UserName un) r
 		_ -> return ()
 	showPage t html =<< io . setUName u =<<
 		io (BS.readFile "static/i_know.html")
@@ -352,14 +351,17 @@ setUName u@(User un) t = do
 
 homeLookup :: User -> Maybe Acc.MailAddress -> BS.ByteString -> [BS.ByteString]
 homeLookup (User un) _ "user_name" = [un]
-homeLookup _ (Just (Acc.MailAddress ma)) "mail_address" = [ma]
+homeLookup _ (Just (Acc.MailAddress ma)) "mail_address" = [decode ma]
 homeLookup _ _ "mail_address" = ["no address"]
 homeLookup _ _ "line" = ["hello", "world"]
 homeLookup _ _ _ = []
 
 homeValues :: BS.ByteString -> IO [BS.ByteString]
 homeValues "LINE" = (<$> Acc.getRequests) . map $ \(x, y, z) ->
-	BSC.unwords [BS.concat ["<a href=\"/requests/", x, "\">", x, "</a>"], y, z]
+	BSC.unwords [
+		BS.concat ["<a href=\"/requests/", x, "\">", x, "</a>"],
+		y,
+		decode z ]
 homeValues _ = return []
 
 showFile :: PeyotlsHandle -> ContentType -> FilePath -> PeyotlsM ()
