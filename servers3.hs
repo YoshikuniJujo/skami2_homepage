@@ -115,14 +115,14 @@ resp r ut t rg = do
 		Just (Dynamic f) -> f t conn mu pr s
 		_	| "/requests/" `BS.isPrefixOf` (\(Path p) -> p) pt ->
 				(showPage t html =<<) . io $ do
-					t <- BS.readFile
+					tt <- BS.readFile
 						"static/requests/template.html"
 					let Path p = pt
 					fromJust <$> template
 						(reqLookup p)
 						(reqValues $ BS.drop 10 $
-							(\(Path p) -> p) pt)
-						t
+							(\(Path pp) -> pp) pt)
+						tt
 			| "/images/" `BS.isPrefixOf` (\(Path p) -> p) pt -> do
 				let Path p = pt
 				showFile t png . ("static/" ++) $ BSC.unpack p
