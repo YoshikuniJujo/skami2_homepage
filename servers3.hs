@@ -347,14 +347,18 @@ logoutCookie = SetCookie {
 setUName :: User -> BS.ByteString -> IO BS.ByteString
 setUName u@(User un) t = do
 	ma <- Acc.mailAddress (Acc.UserName un)
-	fromJust <$> template (homeLookup u ma) homeValues t
+	ih <- Acc.isHbmember (Acc.UserName un)
+	fromJust <$> template (homeLookup u ma ih) homeValues t
 
-homeLookup :: User -> Maybe Acc.MailAddress -> BS.ByteString -> [BS.ByteString]
-homeLookup (User un) _ "user_name" = [un]
-homeLookup _ (Just (Acc.MailAddress ma)) "mail_address" = [decode ma]
-homeLookup _ _ "mail_address" = ["no address"]
-homeLookup _ _ "line" = ["hello", "world"]
-homeLookup _ _ _ = []
+homeLookup ::
+	User -> Maybe Acc.MailAddress -> Bool -> BS.ByteString -> [BS.ByteString]
+homeLookup (User un) _ _ "user_name" = [un]
+homeLookup _ (Just (Acc.MailAddress ma)) _ "mail_address" = [decode ma]
+homeLookup _ _ _ "mail_address" = ["no address"]
+homeLookup _ _ _ "line" = ["hello", "world"]
+homeLookup _ _ False "is_hbmember" = [""]
+homeLookup _ _ _ "is_hbmember" = ["You are HB member"]
+homeLookup _ _ _ _ = []
 
 homeValues :: BS.ByteString -> IO [BS.ByteString]
 homeValues "LINE" = (<$> Acc.getRequests) . map $ \(x, y, z) ->

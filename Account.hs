@@ -3,7 +3,7 @@
 module Account (
 	Connection,
 	UserName(..), MailAddress(..), Password(..), MkAccErr(..),
-	open, newAccount, activate, chkLogin, mailAddress,
+	open, newAccount, activate, chkLogin, mailAddress, isHbmember,
 
 	insertRequest, getRequests, getReqDescription,
 
@@ -13,6 +13,7 @@ module Account (
 import Control.Applicative
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
+import qualified Data.ByteString.Base64 as B64
 import Data.IORef
 import "crypto-random" Crypto.Random
 
@@ -34,8 +35,8 @@ open = Connection <$> (newIORef . cprgCreate =<< createEntropyPool)
 
 stmtMkAccount :: String
 stmtMkAccount = "INSERT INTO account (" ++
-	"name, salt, hash, mail_address, act_key, activated) VALUES (" ++
-	":name, :salt, :hash, :mail_address, :act_key, 0)"
+	"name, salt, hash, mail_address, act_key, activated, is_hbmember) VALUES (" ++
+	":name, :salt, :hash, :mail_address, :act_key, 0, :is_hbmember)"
 
 newAccount :: Connection ->
 	UserName -> MailAddress -> Password -> IO (Either MkAccErr UUID4)
@@ -55,9 +56,14 @@ newAccount conn un@(UserName nm) ma@(MailAddress addr) psw = do
 					bind sm ":mail_address" $ BSC.unpack addr
 					bind sm ":act_key" $ show u
 					bind sm ":salt" $ BSC.unpack slt
-					bind sm ":hash" hs
+					bind sm ":hash" $ B64.encode hs
+					bind sm ":is_hbmember" (0 :: Int)
 					step sm
 			return $ Right u
+
+fromRight :: Either a b -> b
+fromRight (Right r) = r
+fromRight _ = error "fromRight: not Right"
 
 qCheckName :: String
 qCheckName = "SELECT name FROM account WHERE name = :name"
@@ -109,7 +115,7 @@ chkLogin (UserName n) pw = (fst <$>) . withSQLite "sqlite3/accounts.sqlite3" $ \
 		case r of
 			Row -> chkHash pw
 				<$> (Salt <$> column sm 0)
-				<*> (Hash <$> column sm 1)
+				<*> (Hash . fromRight . B64.decode <$> column sm 1)
 			_ -> return False
 
 qGetMailAddress :: String
@@ -124,6 +130,20 @@ mailAddress (UserName nm) = withSQLite "sqlite3/accounts.sqlite3" $ \db ->
 		case r of
 			Row -> Just . MailAddress . BSC.pack <$> column sm 0
 			_ -> return Nothing
+
+qGetIsHbmember :: String
+qGetIsHbmember = "SELECT is_hbmember FROM account WHERE name = :name"
+
+isHbmember :: UserName -> IO Bool
+isHbmember (UserName nm) = withSQLite "sqlite3/accounts.sqlite3" $ \db -> do
+	(fst <$>) . withPrepared db qGetIsHbmember $ \sm -> do
+		bind sm ":name" (BSC.unpack nm)
+		r <- step sm
+		print r
+		column sm 0 >>= (print :: Int -> IO ())
+		case r of
+			Row -> (== (1 :: Int)) <$> column sm 0
+			_ -> return False
 
 qInsertRequest :: String
 qInsertRequest =
