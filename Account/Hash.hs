@@ -1,7 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 module Account.Hash (
-	Password(..), Salt(..), Hash(..), createHash, chkHash,
+	Password(..), Salt(..), Hash(..), createHash, chkHash, mkHash
 	) where
 
 import Control.Applicative

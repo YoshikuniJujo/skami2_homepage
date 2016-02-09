@@ -103,6 +103,9 @@ chkLogin (UserName n) pw = (fst <$>) . withSQLite "sqlite3/accounts.sqlite3" $ \
 	withPrepared db qSaltHash $ \sm -> do
 		bind sm ":name" (BSC.unpack n)
 		r <- step sm
+		print r
+		print =<< Hash <$> column sm 1
+		print . mkHash pw =<< Salt <$> column sm 0
 		case r of
 			Row -> chkHash pw
 				<$> (Salt <$> column sm 0)

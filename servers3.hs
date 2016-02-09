@@ -32,7 +32,7 @@ import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ByteString.Lazy as LBS
 
 import UUID4 (UUID4, newGen, uuid4IO)
-import MakeHash
+-- import MakeHash
 import MailTo
 import UserGroup
 import URLEncode
@@ -292,7 +292,7 @@ signup = Dynamic $ \t conn _ up (_ut, _rg) -> do
 		liftIO $ BSC.putStrLn p
 		if cp /= "%E3%83%8F%E3%83%9F%E3%83%B3%E3%82%B0%E3%83%90%E3%83%BC%E3%83%89" || p /= rp
 		then showFile t html "static/badcaptcha.html"
-		else do	_ <- liftIO $ mkAccount un p
+		else do	-- _ <- liftIO $ mkAccount un p
 			ret <- liftIO $ Acc.newAccount conn
 				(Acc.UserName un) (Acc.MailAddress ma)
 				(Acc.Password p)
